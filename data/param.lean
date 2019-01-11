@@ -53,6 +53,19 @@ meta def expr.abstract_ : (name → binder_info → expr → expr → expr) →
 meta def name.param (n : nat) (x : name) : name :=
   "param" ++ to_string n ++ x
 
+meta def environment.trailing_pi_type_of (env : environment) : expr → option name
+ | (pi _ _ t b) := match b with
+   | (pi _ _ _ _) := environment.trailing_pi_type_of b
+   | _ := some t.get_app_fn.const_name
+   end
+ | _ := none
+
+meta def environment.inductive_type_of_rec (env : environment) (n : name) : option name :=
+  match env.get n with
+  | (exceptional.success decl) := env.trailing_pi_type_of decl.type
+  | _ := none
+  end
+
 meta def expr.param' (p := 2) : expr → name_map (expr × expr × expr) →
   tactic (expr × expr × expr)
 | (var         db)  _ := fail $ "expr.param: cannot translate a var"
@@ -63,7 +76,7 @@ meta def expr.param' (p := 2) : expr → name_map (expr × expr × expr) →
 | c@(const       x lvls) _ := do
    env ← get_env,
    if env.is_recursor x then
-   match env.inductive_type_of x with
+   match env.inductive_type_of_rec x with
    | none := do
      trace $ "expr.param: " ++ to_string x ++ " has no inductive_type_of",
      fail "STOP"
@@ -117,6 +130,20 @@ meta def expr.param (t : expr) (p := 2) (lconst := mk_name_map) :=
 
 #print declaration
 
+#print nat.pred._main
+#print nat.cases_on
+#help commands
+
+#set_option profiler true
+
+#reduce nat.pred 10000
+
+#run_cmd do
+  let n := `(nat.pred 10),
+  nfn ← tactic.whnf n,
+  trace n
+
+
 -- could replace the consts argument with
 
 meta def param.inductive (p := 2) (n : name) : tactic unit := do
@@ -150,6 +177,8 @@ meta def param.def (p := 2) (n : name) : tactic unit := do
   decl ← env.get n,
   match decl with
   | (declaration.defn _ univs α body _ _) := do
+    trace α,
+    trace $ to_string body,
     (_, _, αR) ← α.param 2,
     (_, _, bodyR) ← body.param 2,
     let lvls := univs.map level.param,
@@ -185,6 +214,33 @@ meta def param_cmd (_ : parse $ tk "#param") : lean.parser unit := do
 #print nat.succ
 #print param.«2».nat.succ
 #print param.«2».punit
+#print list.rec
+#print param.«2».list.rec
+
+#print declaration
+
+#print expr
+
+#print macro_def
+
+#run_cmd do
+  let n := `has_zero.zero,
+  env ← get_env,
+  decl ← env.get n,
+  match decl with
+  | (declaration.defn x univs α body hints b) := do
+    trace ("defn", x, univs, α, body, b),
+    trace $ env.unfold_all_macros body
+  | (declaration.thm x univs α tasks) := trace ("thm", x, univs, α)
+  | (declaration.cnst x univs α b) := trace ("cnst", x, univs, α, b)
+  | (declaration.ax x univs α) := trace ("ax", x, univs, α)
+  end
+
+#print has_zero.zero
+
+#param has_zero.zero
+
+#print param.«2».has_zero.zero
 
 #print nat.below
 
