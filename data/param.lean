@@ -134,14 +134,14 @@ meta def expr.param (t : expr) (p := 2) (lconst := mk_name_map) :=
 #print nat.cases_on
 #help commands
 
-#set_option profiler true
+-- #set_option profiler true
 
-#reduce nat.pred 10000
+-- #reduce nat.pred 10000
 
-#run_cmd do
-  let n := `(nat.pred 10),
-  nfn ← tactic.whnf n,
-  trace n
+-- #run_cmd do
+--   let n := `(nat.pred 10),
+--   nfn ← tactic.whnf n,
+--   trace n
 
 
 -- could replace the consts argument with
