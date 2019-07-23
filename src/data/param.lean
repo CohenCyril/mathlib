@@ -16,6 +16,7 @@ in Computer Science Logic 2012 (CSL’12).
 import tactic
 open expr native tactic
 open lean.parser interactive
+set_option pp.universes true
 
 meta def expr.instantiate_lam (nv : expr) : expr → expr
 | (lam nm bi tp bd) := bd.instantiate_var nv
@@ -51,7 +52,8 @@ meta def expr.abstract_ : (name → binder_info → expr → expr → expr) →
 | k e _                           := e
 
 meta def name.param (n : nat) (x : name) : name :=
-  "param" ++ to_string n ++ x
+  x ++ "param" ++ to_string n
+
 
 meta def environment.trailing_pi_type_of (env : environment) : expr → option name
  | (pi _ _ t b) := match b with
@@ -66,15 +68,17 @@ meta def environment.inductive_type_of_rec (env : environment) (n : name) : opti
   | _ := none
   end
 
-meta def expr.param' (p := 2) : expr → name_map (expr × expr × expr) →
+meta def expr.param' (p : nat) (meta_univ : bool) : expr → name_map (expr × expr × expr) →
   tactic (expr × expr × expr)
 | (var         db)  _ := fail $ "expr.param: cannot translate a var"
 | (sort        lvl) _ := do
+  meta_lvl ← if meta_univ then mk_meta_univ else pure lvl,
   return (sort lvl, sort lvl,
     lam "α0" bid (sort lvl) $ lam "α1" bid (sort lvl) $
-    pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort lvl)
+    pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort meta_lvl)
 | c@(const       x lvls) _ := do
-   env ← get_env,
+   /-
+   env ← get_env, 
    if env.is_recursor x then
    match env.inductive_type_of_rec x with
    | none := do
@@ -84,7 +88,8 @@ meta def expr.param' (p := 2) : expr → name_map (expr × expr × expr) →
      trace $ "expr.param: " ++ to_string x ++ " not yet implemented",
      fail "STOP"
    end
-   else return (c, c, const (x.param p) lvls)
+   else  -/
+   return (c, c, const (x.param p) lvls)
 | c@(local_const x pry binfo α) lconsts := lconsts.find x
 | (app         u v) lconsts := do
   (u0, u1, uR) ← u.param' lconsts,
@@ -125,8 +130,8 @@ meta def expr.param' (p := 2) : expr → name_map (expr × expr × expr) →
 | exp@_ _ := fail $
   "expr.param': expression " ++ exp.to_string ++ " is not translatable"
 
-meta def expr.param (t : expr) (p := 2) (lconst := mk_name_map) :=
-  expr.param' p t lconst
+meta def expr.param (t : expr) (p := 2) (meta_univ := ff) (lconst := mk_name_map) :=
+  expr.param' p meta_univ t lconst
 
 #print declaration
 
@@ -157,36 +162,46 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
   let lvls := univs.map level.param,
   i ← return $ const n lvls,
   let ty := ind_decl.type,
-  trace lvls,
-  (ty0, ty1, tyR) ← ty.param p,
+  trace ("lvls", lvls),
+  trace ("ctors:", ctors),
   ctorsR ← ctors.mmap (λ n : name, do
     decl ← get_decl n,
     c ← return $ const n lvls,
     let ty := decl.type,
     (ty0, ty1, tyR) ← ty.param p,
-    return (n.param p, tyR.mk_subst_or_app [c, c])),
-  trace ctors,
-  trace $ to_string (tyR.mk_subst_or_app [i, i]),
-  trace $ to_string ctorsR,
-  add_inductive (n.param p) univs ((p + 1) * nparams)
-    (tyR.mk_subst_or_app [i, i]) ctorsR
+    let tyRcc := tyR.mk_subst_or_app [c, c], 
+    return (n.param p, tyRcc)),
+  trace $ ("ctorsR:", to_string ctorsR),
+  (ty0, ty1, tyR) ← ty.param p,
+  trace $ ("tyR", to_string tyR),
+  let tyRii := tyR.mk_subst_or_app [i, i],
+  trace $ ("tyRii", to_string tyRii),
+  add_inductive (n.param p) univs ((p + 1) * nparams) tyRii ctorsR
 
 meta def param.def (p := 2) (n : name) : tactic unit := do
   env ← get_env,
   guard $ env.is_definition n,
   decl ← env.get n,
   match decl with
-  | (declaration.defn _ univs α body _ _) := do
-    trace α,
-    trace $ to_string body,
-    (_, _, αR) ← α.param 2,
-    (_, _, bodyR) ← body.param 2,
-    let lvls := univs.map level.param,
-    d ← return $ const n lvls,
+  | (declaration.defn _ univs α fbody _ _) := do
+    trace ("def type:", α),
+    trace $ ("def fbody:", to_string fbody),
+    let body := env.unfold_all_macros fbody,
+    trace $ ("def body:", to_string body),
+    (_, _, αR) ← α.param 2 tt,
+    trace ("def αR:", αR),
+    (_, _, bodyR) ← body.param 2 ff,
+    trace ("def bodyR:", bodyR),
+    d ← return $ const n (univs.map level.param),
     let tyR := αR.mk_subst_or_app [d, d],
-    trace tyR,
-    trace bodyR,
-    add_decl $ mk_definition (n.param 2) univs tyR bodyR
+    trace ("def tyR", tyR),
+    /- infer_type bodyR >>= unify tyR, -/
+    bodyR_ty ← infer_type bodyR,
+    trace ("def bodyR_ty:", bodyR_ty),
+    unify bodyR_ty tyR transparency.all,
+    trace ("def tyR_unif:", tyR),
+    add_decl $ mk_definition (n.param 2) univs tyR bodyR,
+    trace ("=======================")
   | _ := fail $ "param.def:  not a definition"
   end
 
@@ -204,26 +219,49 @@ meta def param_cmd (_ : parse $ tk "#param") : lean.parser unit := do
 ----------------------
 -- Working examples --
 ----------------------
+universes u v l
 
-#param punit pprod bool nat and or list
+#param punit.
+#param pprod bool nat and or list
 #param has_zero has_one has_neg has_add has_mul
 
-#check param.«2».bool
+#print id
+#param id
+def id_param2 :Π (α0 α1 : Sort u) (αR : α0 → α1 → Sort u) (a0 : α0) (a1 : α1), αR a0 a1 → αR (id.{u} a0) (id.{u} a1)
+   := λ (α0 α1 : Sort u) (αR : α0 → α1 → Sort u) (a0 : α0) (a1 : α1) (aR : αR a0 a1), aR
+
+
+#check bool.param.«2»
 #print nat.rec
-#print param.«2».nat.rec
+#print nat.param.«2».rec
 #print nat.succ
-#print param.«2».nat.succ
-#print param.«2».punit
+#print nat.succ.param.«2»
+#print punit.param.«2»
 #print list.rec
-#print param.«2».list.rec
+#print list.param.«2».rec
+
+#print nat.pred._main
+#print nat.cases_on
+
+#param nat.cases_on
+
+#param nat.add
 
 #print declaration
 
 #print expr
 
 #print macro_def
+#print has_zero.rec
+#print has_zero.param.«2»
 
-#run_cmd do
+def has_zero.rec.type :=
+ Π {α : Type u} {C : has_zero.{u} α → Sort l},
+  (Π (zero : α), C {zero := zero}) → Π (n : has_zero.{u} α), C n
+#print has_zero.rec.type
+def has_zero_rec_test : has_zero.rec.type := @has_zero.rec.{u l}
+
+run_cmd (do
   let n := `has_zero.zero,
   env ← get_env,
   decl ← env.get n,
@@ -234,13 +272,47 @@ meta def param_cmd (_ : parse $ tk "#param") : lean.parser unit := do
   | (declaration.thm x univs α tasks) := trace ("thm", x, univs, α)
   | (declaration.cnst x univs α b) := trace ("cnst", x, univs, α, b)
   | (declaration.ax x univs α) := trace ("ax", x, univs, α)
-  end
+  end)
+
+
+#param has_zero.rec.type
+
+def test : has_zero.rec.type.{u l} →
+ has_zero.rec.type.{u l} →
+ Sort (imax
+         (u+2)
+         (u+2)
+         (u+2)
+         (max (u+1) (l+1))
+         (max (u+1) (l+1))
+         (max (u+1) (l+1))
+         (imax (u+1) l)
+         (imax (u+1) l)
+         (u+1)
+         (u+1)
+         (u+1)
+         l) :=
+λ (f0 f1 :
+   Π (α0 : Type u) (C0 : has_zero.{u} α0 → Sort l),
+     (Π (zero0 : α0), C0 {zero := zero0}) → Π (n0 : has_zero.{u} α0), C0 n0),
+   Π (α0 α1 : Type u) (αR : α0 → α1 → Type u) (C0 : has_zero.{u} α0 → Sort l)
+   (C1 : has_zero.{u} α1 → Sort l)
+   (CR :
+     Π (a0 : has_zero.{u} α0) (a1 : has_zero.{u} α1),
+       has_zero.param.«2».{u} α0 α1 αR a0 a1 → C0 a0 → C1 a1 → Sort l)
+   (a0 : Π (zero0 : α0), C0 {zero := zero0}) (a1 : Π (zero1 : α1), C1 {zero := zero1}),
+     (Π (zero0 : α0) (zero1 : α1) (zeroR : αR zero0 zero1),
+        CR {zero := zero0} {zero := zero1} (has_zero.mk.param.«2».{u} α0 α1 αR zero0 zero1 zeroR) (a0 zero0)
+          (a1 zero1)) →
+     Π (n0 : has_zero.{u} α0) (n1 : has_zero.{u} α1) (nR : has_zero.param.«2».{u} α0 α1 αR n0 n1),
+       CR n0 n1 nR (f0 α0 C0 a0 n0) (f1 α1 C1 a1 n1)
+#check test
 
 #print has_zero.zero
 
 #param has_zero.zero
 
-#print param.«2».has_zero.zero
+#print has_zero.zero.param.«2»
 
 #print nat.below
 
@@ -250,46 +322,45 @@ meta def param_cmd (_ : parse $ tk "#param") : lean.parser unit := do
 
 #param nat.below
 
-universe l
 def nat.rec.type := Π {C : ℕ → Sort l}, C 0 → (Π (n : ℕ), C n → C (nat.succ n)) → Π (n : ℕ), C n
 
 #print nat.rec.type
 #param nat.rec.type
 
-def param.«2».nat.rec.type : nat.rec.type → nat.rec.type → Sort (imax (max 1 (l+1)) l 1 l) :=
+def nat.rec.type.param.«2» : nat.rec.type → nat.rec.type → Sort (imax (max 1 (l+1)) l 1 l) :=
   λ (f0 f1 : Π (C0 : ℕ → Sort l), C0 0 → (Π (n0 : ℕ), C0 n0 → C0 (nat.succ n0)) → Π (n0 : ℕ), C0 n0),
-  Π (C0 C1 : ℕ → Sort l) (CR : Π (a0 a1 : ℕ), param.«2».nat a0 a1 → C0 a0 → C1 a1 → Sort l) (a0 : C0 0)
+  Π (C0 C1 : ℕ → Sort l) (CR : Π (a0 a1 : ℕ), nat.param.«2» a0 a1 → C0 a0 → C1 a1 → Sort l) (a0 : C0 0)
   (a1 : C1 0),
-    CR 0 0 (param.«2».has_zero.zero ℕ ℕ param.«2».nat nat.has_zero nat.has_zero param.«2».nat.has_zero) a0
+    CR 0 0 (has_zero.zero.param.«2» ℕ ℕ nat.param.«2» nat.has_zero nat.has_zero nat.has_zero.param.«2») a0
       a1 →
     Π (a0_1 : Π (n0 : ℕ), C0 n0 → C0 (nat.succ n0)) (a1_1 : Π (n1 : ℕ), C1 n1 → C1 (nat.succ n1)),
-      (Π (n0 n1 : ℕ) (nR : param.«2».nat n0 n1) (a0 : C0 n0) (a1 : C1 n1),
+      (Π (n0 n1 : ℕ) (nR : nat.param.«2» n0 n1) (a0 : C0 n0) (a1 : C1 n1),
          CR n0 n1 nR a0 a1 →
-         CR (nat.succ n0) (nat.succ n1) (param.«2».nat.succ n0 n1 nR) (a0_1 n0 a0) (a1_1 n1 a1)) →
-      Π (n0 n1 : ℕ) (nR : param.«2».nat n0 n1), CR n0 n1 nR (f0 C0 a0 a0_1 n0) (f1 C1 a1 a1_1 n1)
+         CR (nat.succ n0) (nat.succ n1) (nat.succ.param.«2» n0 n1 nR) (a0_1 n0 a0) (a1_1 n1 a1)) →
+      Π (n0 n1 : ℕ) (nR : nat.param.«2» n0 n1), CR n0 n1 nR (f0 C0 a0 a0_1 n0) (f1 C1 a1 a1_1 n1)
 
 
 
 
 
-def param.«2».nat.below : Π (C0 C1 : ℕ → Sort l),
-  (Π (n0 n1 : ℕ), param.«2».nat n0 n1 → C0 n0 → C1 n1 → Sort l) →
-  Π (n0 n1 : ℕ), param.«2».nat n0 n1 → nat.below C0 n0 → nat.below C1 n1 → Sort (max 1 l) :=
-λ (C0 C1 : ℕ → Sort l) (CR : Π (n0 n1 : ℕ), param.«2».nat n0 n1 → C0 n0 → C1 n1 → Sort l)
-(n0 n1 : ℕ) (nR : param.«2».nat n0 n1),
+def nat.below.param.«2» : Π (C0 C1 : ℕ → Sort l),
+  (Π (n0 n1 : ℕ), nat.param.«2» n0 n1 → C0 n0 → C1 n1 → Sort l) →
+  Π (n0 n1 : ℕ), nat.param.«2» n0 n1 → nat.below C0 n0 → nat.below C1 n1 → Sort (max 1 l) :=
+λ (C0 C1 : ℕ → Sort l) (CR : Π (n0 n1 : ℕ), nat.param.«2» n0 n1 → C0 n0 → C1 n1 → Sort l)
+(n0 n1 : ℕ) (nR : nat.param.«2» n0 n1),
 
-param.«2».nat.rec  (λ (n0 : ℕ), Sort (max 1 l)) (λ (n1 : ℕ), Sort (max 1 l))
-    (λ (n0 n1 : ℕ) (nR : param.«2».nat n0 n1)
+nat.rec.param.«2»  (λ (n0 : ℕ), Sort (max 1 l)) (λ (n1 : ℕ), Sort (max 1 l))
+    (λ (n0 n1 : ℕ) (nR : nat.param.«2» n0 n1)
     (α0 α1 : Sort (max 1 l)), α0 → α1 → Sort (max 1 l))
-    param.«2».punit
+    punit.param.«2»
     (λ (n0 : ℕ) (ih0 : Sort (max 1 l)), pprod (pprod (C0 n0) ih0) punit)
     (λ (n1 : ℕ) (ih1 : Sort (max 1 l)), pprod (pprod (C1 n1) ih1) punit)
-    (λ (n0 n1 : ℕ) (nR : param.«2».nat n0 n1) (ih0 ih1 : Sort (max 1 l)) (ihR : ih0 → ih1 → Sort (max 1 l)),
-       param.«2».pprod (pprod (C0 n0) ih0) (pprod (C1 n1) ih1)
-         (param.«2».pprod (C0 n0) (C1 n1) (CR n0 n1 nR) ih0 ih1 ihR)
+    (λ (n0 n1 : ℕ) (nR : nat.param.«2» n0 n1) (ih0 ih1 : Sort (max 1 l)) (ihR : ih0 → ih1 → Sort (max 1 l)),
+       pprod.param.«2» (pprod (C0 n0) ih0) (pprod (C1 n1) ih1)
+         (pprod.param.«2» (C0 n0) (C1 n1) (CR n0 n1 nR) ih0 ih1 ihR)
          punit
          punit
-         param.«2».punit)
+         punit.param.«2»)
     n0
     n1
     nR
