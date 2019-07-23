@@ -68,7 +68,8 @@ meta def environment.inductive_type_of_rec (env : environment) (n : name) : opti
   | _ := none
   end
 
-meta def expr.param' (p : nat) (meta_univ : bool) : expr → name_map (expr × expr × expr) →
+meta def expr.param' (p : nat) (meta_univ : bool) : expr →
+  name_map (expr × expr × expr) →
   tactic (expr × expr × expr)
 | (var         db)  _ := fail $ "expr.param: cannot translate a var"
 | (sort        lvl) _ := do
@@ -189,18 +190,17 @@ meta def param.def (p := 2) (n : name) : tactic unit := do
     let body := env.unfold_all_macros fbody,
     trace $ ("def body:", to_string body),
     (_, _, αR) ← α.param 2 tt,
-    trace ("def αR:", αR),
+    /- trace ("def αR:", αR), -/
     (_, _, bodyR) ← body.param 2 ff,
     trace ("def bodyR:", bodyR),
     d ← return $ const n (univs.map level.param),
     let tyR := αR.mk_subst_or_app [d, d],
-    trace ("def tyR", tyR),
-    /- infer_type bodyR >>= unify tyR, -/
-    bodyR_ty ← infer_type bodyR,
-    trace ("def bodyR_ty:", bodyR_ty),
-    unify bodyR_ty tyR transparency.all,
-    trace ("def tyR_unif:", tyR),
-    add_decl $ mk_definition (n.param 2) univs tyR bodyR,
+    trace ("def tyR:", tyR),
+    infer_type bodyR >>= λ btyR, unify tyR btyR transparency.all,
+    tyR_unif ← instantiate_mvars tyR,
+    trace ("def tyR_unif:", tyR_unif),
+    /- trace ("def tyR_unif:", tyR_unif.to_raw_fmt), -/
+    add_decl $ mk_definition (n.param 2) univs tyR_unif bodyR,
     trace ("=======================")
   | _ := fail $ "param.def:  not a definition"
   end
@@ -227,6 +227,23 @@ universes u v l
 
 #print id
 #param id
+#check list
+#print list.param.«2».rec
+
+inductive vec (α : Sort u) : ℕ → Type u
+| vnil {} : vec nat.zero
+| vcons {n : ℕ} (vhd : α) (vtl : vec n) : vec n.succ
+#print vec.rec
+#param vec
+def vec.rec.type := Π {α : Sort u} {C : Π (a : ℕ), vec.{u} α a → Sort l},
+  C nat.zero vec.vnil.{u} →
+  (Π {n : ℕ} (vhd : α) (vtl : vec.{u} α n), C n vtl → C (nat.succ n) (vec.vcons.{u} vhd vtl)) →
+  Π {a : ℕ} (n : vec.{u} α a), C a n
+#param vec.rec.type
+#print vec.rec.type.param.«2» 
+
+#check vec.param.«2».rec
+
 def id_param2 :Π (α0 α1 : Sort u) (αR : α0 → α1 → Sort u) (a0 : α0) (a1 : α1), αR a0 a1 → αR (id.{u} a0) (id.{u} a1)
    := λ (α0 α1 : Sort u) (αR : α0 → α1 → Sort u) (a0 : α0) (a1 : α1) (aR : αR a0 a1), aR
 
@@ -276,6 +293,7 @@ run_cmd (do
 
 
 #param has_zero.rec.type
+#print has_zero.rec.type.param.«2»
 
 def test : has_zero.rec.type.{u l} →
  has_zero.rec.type.{u l} →
