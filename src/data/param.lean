@@ -36,24 +36,24 @@ meta def expr.strip_lam : expr → nat → option expr
 meta def name.ext (ext : string) (x : name) : name :=
   (x.to_string ++ ext : string)
 
-meta def param.intro (lconsts : name_map (expr × expr × expr))
-    (x : name) (α0 α1 αR : expr) (body : expr) :
-      tactic ((expr × expr × expr) × name_map (expr × expr × expr) × expr) := do
+meta def param.fresh (lconsts : name_map (expr × expr × expr))
+    (x : name) (α0 α1 αR : expr) :
+  tactic ((expr × expr × expr) × name_map (expr × expr × expr)) := do
   uniq_name0 ← mk_fresh_name,
   let fresh0 := expr.local_const uniq_name0 (x.ext "0") bid α0,
   fresh1 ← mk_local_def (x.ext "1") α1,
   freshR ← mk_local_def (x.ext "R") (αR.mk_subst_or_app [fresh0, fresh1]),
   let freshs := (fresh0, fresh1, freshR),
-  return (freshs, lconsts.insert uniq_name0 freshs, body.instantiate_var fresh0)
+  return (freshs, lconsts.insert uniq_name0 freshs)
 
-meta def expr.abstract_ : (name → binder_info → expr → expr → expr) →
-  expr → expr → expr
-| k e (expr.local_const n m bi α) := k m bi α (e.abstract_local n)
-| k e _                           := e
+meta def param.intro (lconsts : name_map (expr × expr × expr))
+    (x : name) (α0 α1 αR : expr) (body : expr) :
+      tactic ((expr × expr × expr) × name_map (expr × expr × expr) × expr) := do
+  (fs@(f0, f1, fR), lconsts) ← param.fresh lconsts x α0 α1 αR,
+  return (fs, lconsts, body.instantiate_var f0)
 
 meta def name.param (n : nat) (x : name) : name :=
   x ++ "param" ++ to_string n
-
 
 meta def environment.trailing_pi_type_of (env : environment) : expr → option name
  | (pi _ _ t b) := match b with
@@ -77,47 +77,35 @@ meta def expr.param' (p : nat) (meta_univ : bool) : expr →
   return (sort lvl, sort lvl,
     lam "α0" bid (sort lvl) $ lam "α1" bid (sort lvl) $
     pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort meta_lvl)
-| c@(const       x lvls) _ := do
-   /-
-   env ← get_env, 
-   if env.is_recursor x then
-   match env.inductive_type_of_rec x with
-   | none := do
-     trace $ "expr.param: " ++ to_string x ++ " has no inductive_type_of",
-     fail "STOP"
-   | (some i) := do
-     trace $ "expr.param: " ++ to_string x ++ " not yet implemented",
-     fail "STOP"
-   end
-   else  -/
-   return (c, c, const (x.param p) lvls)
+| c@(const       x lvls) _ := let xR := x.param p in
+    /- do env ← get_env, env.get xR, /- fix: test only non current definitions -/ -/
+    return (c, c, const xR lvls)
 | c@(local_const x pry binfo α) lconsts := lconsts.find x
-| (app         u v) lconsts := do
+| (app u v) lconsts := do
   (u0, u1, uR) ← u.param' lconsts,
-  (v0, v1, vR) ← v.param' lconsts,
-  trace $ "u= " ++ to_string u ++ ";   uR= " ++ to_string uR,
+  (v0, v1, vR) ← v.param' lconsts, /- trace $ "u= " ++ to_string u ++ ";   uR= " ++ to_string uR, -/
   return (app u0 v0, app u1 v1, uR v0 v1 vR)
-| (lam         x binfo α body) lconsts := do
+| (lam x binfo α body) lconsts := do
   (α0, α1, αR) ← α.param' lconsts,
   ((x0, x1, xR), lconstsx, bodyx) ← param.intro lconsts x α0 α1 αR body,
   (body0, body1, bodyR) ← bodyx.param' lconstsx,
-  let t0 := body0.abstract_ lam x0,
-  let t1 := body1.abstract_ lam x1,
-  let tR := ((bodyR.abstract_ lam xR).abstract_ lam x1).abstract_ lam x0,
+  let t0 := body0.mk_binding lam x0,
+  let t1 := body1.mk_binding lam x1,
+  let tR := ((bodyR.mk_binding lam xR).mk_binding lam x1).mk_binding lam x0,
   return (t0, t1, tR)
-| (pi          x binfo α body) lconsts := do
+| (pi x binfo α body) lconsts := do
   (α0, α1, αR) ← α.param' lconsts,
   ((x0, x1, xR), lconstsx, bodyx) ← param.intro lconsts x α0 α1 αR body,
   (body0, body1, bodyR) ← bodyx.param' lconstsx,
-  let t0 := body0.abstract_ pi x0,
-  let t1 := body1.abstract_ pi x1,
+  let t0 := body0.mk_binding pi x0,
+  let t1 := body1.mk_binding pi x1,
   f0 ← mk_local_def "f0" t0,
   f1 ← mk_local_def "f1" t1,
   let tR := (((((bodyR.mk_subst_or_app [f0 x0, f1 x1]
-     ).abstract_ pi xR).abstract_ pi x1).abstract_ pi x0
-     ).abstract_ lam f1).abstract_ lam f0,
+     ).mk_binding pi xR).mk_binding pi x1).mk_binding pi x0
+     ).mk_binding lam f1).mk_binding lam f0,
   return (t0, t1, tR)
-| (elet        x α val body) lconsts := fail $
+| (elet  x α val body) lconsts := fail $
   "param': elet not implemented"
   -- [WRONG CODE!!!]
   -- (α0, α1, αR) ← α.param',
@@ -134,6 +122,35 @@ meta def expr.param' (p : nat) (meta_univ : bool) : expr →
 meta def expr.param (t : expr) (p := 2) (meta_univ := ff) (lconst := mk_name_map) :=
   expr.param' p meta_univ t lconst
 
+meta def param.fresh_from_pis (p := 2) (meta_univ := ff) :
+      name_map (expr × expr × expr) → ℕ → expr →
+    tactic ((list expr × list expr × list expr) × name_map (expr × expr × expr) × expr)
+  | lconsts nat.zero ty := return (([], [], []), lconsts, ty)
+  | lconsts (nat.succ n) (pi x binfo α body) := do
+      (α0, α1, αR) ← α.param p meta_univ lconsts,
+      ((f0, f1, fR), lconsts, ty') ← param.intro lconsts x α0 α1 αR body,
+      ((fs0, fs1, fsR), lconsts, rest) ← param.fresh_from_pis lconsts n ty',
+      return ((f0 :: fs0, f1 :: fs1, fR :: fsR), lconsts, rest)
+  | _ _ _ := fail $ "param.fresh_from_pi: not enough pi"
+    
+meta def param.fresh_from_pis_collect_rec (p := 2) (meta_univ := ff) :
+      name_map (expr × expr × expr) → expr →
+    tactic ((list expr × list expr × list expr) × name_map (expr × expr × expr) × expr)
+  | lconsts ty := return (([], [], []), lconsts, ty)
+  | lconsts (pi x binfo α body) := do
+      (α0, α1, αR) ← α.param p meta_univ lconsts,
+      ((f0, f1, fR), lconsts, ty') ← param.intro lconsts x α0 α1 αR body,
+      ((fs0, fs1, fsR), lconsts, rest) ← param.fresh_from_pis lconsts n ty',
+      return ((f0 :: fs0, f1 :: fs1, fR :: fsR), lconsts, rest)
+  | _ _ _ := fail $ "param.fresh_from_pi: not enough pi"
+
+meta def param.entangle : (list expr × list expr × list expr) → list expr
+| (x :: xs, y :: ys, z :: zs) := x :: y :: z :: param.entangle (xs, ys, zs)
+| _ := [] 
+
+meta def expr.mk_bindings (k : name → binder_info → expr → expr → expr)
+  (vars : list expr) (e : expr) : expr := vars.reverse.foldl (mk_binding k) e
+
 #print declaration
 
 #print nat.pred._main
@@ -148,9 +165,6 @@ meta def expr.param (t : expr) (p := 2) (meta_univ := ff) (lconst := mk_name_map
 --   let n := `(nat.pred 10),
 --   nfn ← tactic.whnf n,
 --   trace n
-
-
--- could replace the consts argument with
 
 meta def param.inductive (p := 2) (n : name) : tactic unit := do
   env ← get_env,
@@ -177,7 +191,55 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
   trace $ ("tyR", to_string tyR),
   let tyRii := tyR.mk_subst_or_app [i, i],
   trace $ ("tyRii", to_string tyRii),
-  add_inductive (n.param p) univs ((p + 1) * nparams) tyRii ctorsR
+  let nR := n.param p,
+  add_inductive nR univs ((p + 1) * nparams) tyRii ctorsR,
+  trace ("=========== inductive added =============") ,
+  let rec : name := n ++ "rec",
+  let Rrec : name := nR ++ "rec",
+  rec_decl ← get_decl rec,
+  trace ("rec:", rec),
+  rec_const ← mk_const rec,
+  Rrec_const ← mk_const Rrec,
+  trace ("rec_const:", rec_const),
+  let rec_ty := rec_decl.type,
+  trace ("rec_ty:", rec_ty),
+  /- (rec_ty0, rec_ty1, rec_tyR) ← rec_ty.param p,
+  let rec_tyRii := rec_tyR.mk_subst_or_app [rec_const, rec_const],
+  trace ("rec_tyRii:", rec_tyRii), -/
+  (params@(params0, params1, paramsR), lconsts, rec_ty_no_params) ← 
+    param.fresh_from_pis p ff mk_name_map nparams rec_ty,
+  trace ("params:", params),
+  (pred@([pred0], [pred1], [predR]), lconsts, rec_ty_ctors) ← 
+    param.fresh_from_pis p ff lconsts 1 rec_ty_no_params,
+  trace ("pred:", pred),
+  (cases@(cases0, cases1, casesR), lconsts, rec_ty_indexes) ←
+    param.fresh_from_pis p ff lconsts (ctors.length) rec_ty_ctors,
+  trace ("cases:", cases),
+  (indexes@(indexes0, indexes1, indexesR), lconsts, rec_ty_ind) ←
+    param.fresh_from_pis p ff lconsts indices rec_ty_indexes,
+  trace ("indexes:", indexes),
+  (ind@([ind0], [ind1], [indR]), lconsts, rec_ty_stripped) ←
+    param.fresh_from_pis p ff lconsts 1 rec_ty_ind,
+  trace ("ind:", ind),
+  trace ("lconsts:", lconsts),
+  (_, _, PntR) ← (pred0.mk_app (indexes0 ++ [ind0])).param p ff lconsts,
+  trace ("PntR:", PntR),
+  Rcases ← ctors.mmap (λ n : name, do
+    decl ← get_decl n,
+    c ← return $ const n lvls,
+    let ty := decl.type,
+    return punit
+  ),
+  let PntRrr := PntR.mk_subst_or_app
+   [rec_const.mk_app (params0 ++ [pred0] ++ cases0 ++ indexes0 ++ [ind0]),
+   rec_const.mk_app (params1 ++ [pred1] ++ cases1 ++ indexes1 ++ [ind1])],
+  trace ("PntRrr:", PntR),
+  let rec_bodyR := Rrec_const.mk_app $ (param.entangle params) ++
+    [expr.mk_bindings lam (param.entangle indexes) PntRrr],
+  trace ("rec_bodyR", PntR),
+  let recR := expr.mk_bindings lam
+   (param.entangle params ++ param.entangle pred ++ param.entangle cases) rec_bodyR,
+  trace ("recR:", recR)
 
 meta def param.def (p := 2) (n : name) : tactic unit := do
   env ← get_env,
@@ -219,22 +281,37 @@ meta def param_cmd (_ : parse $ tk "#param") : lean.parser unit := do
 ----------------------
 -- Working examples --
 ----------------------
-universes u v l
 
-#param punit.
-#param pprod bool nat and or list
+universes u v l
+#print empty.rec
+#param empty
+#param nonempty
+#param punit pprod bool nat list.
 #param has_zero has_one has_neg has_add has_mul
 
-#print id
+#param true false and or not.
 #param id
+
+
+#print nat.param.«2»
 #check list
+#print list.rec
+#print eq.rec
+#print eq.drec
+
+def list.rec.type := Π {T : Type u} {C : list.{u} T → Sort l},
+  C list.nil.{u} → (Π (hd : T) (tl : list.{u} T), C tl → C (hd :: tl)) → Π (n : list.{u} T), C n
+#param list.rec.type
 #print list.param.«2».rec
+#print list.rec.type.param.«2»
 
 inductive vec (α : Sort u) : ℕ → Type u
 | vnil {} : vec nat.zero
-| vcons {n : ℕ} (vhd : α) (vtl : vec n) : vec n.succ
+| vcons {n : ℕ}  (vhd : α) (vtl : vec n) : vec n.succ
 #print vec.rec
 #param vec
+
+
 def vec.rec.type := Π {α : Sort u} {C : Π (a : ℕ), vec.{u} α a → Sort l},
   C nat.zero vec.vnil.{u} →
   (Π {n : ℕ} (vhd : α) (vtl : vec.{u} α n), C n vtl → C (nat.succ n) (vec.vcons.{u} vhd vtl)) →
@@ -295,36 +372,6 @@ run_cmd (do
 #param has_zero.rec.type
 #print has_zero.rec.type.param.«2»
 
-def test : has_zero.rec.type.{u l} →
- has_zero.rec.type.{u l} →
- Sort (imax
-         (u+2)
-         (u+2)
-         (u+2)
-         (max (u+1) (l+1))
-         (max (u+1) (l+1))
-         (max (u+1) (l+1))
-         (imax (u+1) l)
-         (imax (u+1) l)
-         (u+1)
-         (u+1)
-         (u+1)
-         l) :=
-λ (f0 f1 :
-   Π (α0 : Type u) (C0 : has_zero.{u} α0 → Sort l),
-     (Π (zero0 : α0), C0 {zero := zero0}) → Π (n0 : has_zero.{u} α0), C0 n0),
-   Π (α0 α1 : Type u) (αR : α0 → α1 → Type u) (C0 : has_zero.{u} α0 → Sort l)
-   (C1 : has_zero.{u} α1 → Sort l)
-   (CR :
-     Π (a0 : has_zero.{u} α0) (a1 : has_zero.{u} α1),
-       has_zero.param.«2».{u} α0 α1 αR a0 a1 → C0 a0 → C1 a1 → Sort l)
-   (a0 : Π (zero0 : α0), C0 {zero := zero0}) (a1 : Π (zero1 : α1), C1 {zero := zero1}),
-     (Π (zero0 : α0) (zero1 : α1) (zeroR : αR zero0 zero1),
-        CR {zero := zero0} {zero := zero1} (has_zero.mk.param.«2».{u} α0 α1 αR zero0 zero1 zeroR) (a0 zero0)
-          (a1 zero1)) →
-     Π (n0 : has_zero.{u} α0) (n1 : has_zero.{u} α1) (nR : has_zero.param.«2».{u} α0 α1 αR n0 n1),
-       CR n0 n1 nR (f0 α0 C0 a0 n0) (f1 α1 C1 a1 n1)
-#check test
 
 #print has_zero.zero
 
