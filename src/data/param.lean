@@ -313,7 +313,33 @@ def empty.rec.type := Π (C : empty → Sort l) (n : empty), C n
 #param empty.rec.type
 #print empty.rec.type.param.«2»
 
-run_cmd (do param.recursor 2 "empty")
+#check empty.param.«2»
+#check empty.param.«2».rec
+#print eq
+
+
+inductive myeq1 {α : Sort u} : α → α → Prop | refl (a : α) : myeq1 a a
+#print myeq1.drec
+#print myeq1.cases_on
+
+run_cmd (do
+  l ← mk_fresh_name, let u := level.param l,
+  add_inductive "myeq" [l] 1 
+    (pi "α" binder_info.implicit (sort u)
+    $ pi "a" binder_info.default (var 0)
+    $ pi "a" binder_info.default (var 1) $ sort level.zero)
+   [(("myeq" : name) ++ "refl",
+    pi "α" binder_info.implicit (sort u)
+    $ pi "a" binder_info.default (var 0)
+    $ mk_app (const "myeq" [u]) [var 1, var 0, var 0])
+   ])
+
+#print myeq
+#print myeq.drec
+#print myeq.cases_on
+
+
+run_cmd do param.recursor 2 "empty"
 
 def test :
   ∀ (C0 C1 : empty → Sort l)
