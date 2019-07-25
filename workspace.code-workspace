@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "src"
+		},
+		{
+			"path": "/nix/store/yamy87k9k9dfws9j4sv4h5vbas8m1gx4-lean-3.5.0/lib/lean/library"
+		}
+	],
+	"settings": {}
+}

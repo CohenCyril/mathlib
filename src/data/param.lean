@@ -137,6 +137,13 @@ meta def param.fresh_from_pis (p := 2) :
 meta def concl : expr → expr | (pi _ _ _ ty) := concl ty | ty := ty
 meta def hdapp : expr → expr | (expr.app x _) := hdapp x | x := x
 
+meta def split_pis : option ℕ → expr → list expr × expr
+| (some 0) ty := ([], ty)
+| n (pi _ _ α ty) := 
+  let (αs, ty) := split_pis ((λ x : ℕ, x - 1) <$> n) ty in
+  (α :: αs, ty)
+| _ ty := ([], ty)
+
 meta def param.entangle : (list expr × list expr × list expr) → list expr
 | (x :: xs, y :: ys, z :: zs) := x :: y :: z :: param.entangle (xs, ys, zs)
 | _ := [] 
@@ -322,24 +329,38 @@ inductive myeq1 {α : Sort u} : α → α → Prop | refl (a : α) : myeq1 a a
 #print myeq1.drec
 #print myeq1.cases_on
 
+/- run_cmd (do
+  l ← mk_fresh_name,
+  let u := level.param l,
+  let params := [(sort u : expr)],
+  let ty : expr := pi "a" binder_info.default (var 0)
+    $ pi "a" binder_info.default (var 1) $ sort level.zero,
+  let ctorty : expr := pi "a" binder_info.default (var 0)
+    $ mk_app (const `myeq [u]) [var 1, var 0, var 0],
+  let inds := [((`myeq, ty),
+    [{environment.intro_rule . constr := `refl, type := ctorty}])],
+  updateex_env $ λe, e.add_ginductive options.mk [l] params inds ff) -/
+/- 
 run_cmd (do
   l ← mk_fresh_name, let u := level.param l,
-  add_inductive "myeq" [l] 1 
-    (pi "α" binder_info.implicit (sort u)
+  let ty : expr := pi "α" binder_info.implicit (sort u)
     $ pi "a" binder_info.default (var 0)
-    $ pi "a" binder_info.default (var 1) $ sort level.zero)
-   [(("myeq" : name) ++ "refl",
-    pi "α" binder_info.implicit (sort u)
+    $ pi "a" binder_info.default (var 1) $ sort level.zero,
+  let ctorty : expr := pi "α" binder_info.implicit (sort u)
     $ pi "a" binder_info.default (var 0)
-    $ mk_app (const "myeq" [u]) [var 1, var 0, var 0])
-   ])
-
+    $ mk_app (const `myeq [u]) [var 1, var 0, var 0],
+  let (params, ty) := split_pis (some 1) ty,
+  let (_, ctorty) := split_pis (some 1) ctorty,
+  let inds := [((`myeq, ty),
+    [{environment.intro_rule . constr := `refl, type := ctorty}])],
+  updateex_env $ λe, e.add_ginductive options.mk [l] params inds ff)
+ -/
 #print myeq
 #print myeq.drec
 #print myeq.cases_on
 
 
-run_cmd do param.recursor 2 "empty"
+run_cmd do param.recursor 2 `empty
 
 def test :
   ∀ (C0 C1 : empty → Sort l)
