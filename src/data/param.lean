@@ -68,15 +68,14 @@ meta def environment.inductive_type_of_rec (env : environment) (n : name) : opti
   | _ := none
   end
 
-meta def expr.param' (p : nat) (meta_univ : bool) : expr →
+meta def expr.param' (p : nat) : expr →
   name_map (expr × expr × expr) →
   tactic (expr × expr × expr)
 | (var         db)  _ := fail $ "expr.param: cannot translate a var"
 | (sort        lvl) _ := do
-  meta_lvl ← if meta_univ then mk_meta_univ else pure lvl,
   return (sort lvl, sort lvl,
     lam "α0" bid (sort lvl) $ lam "α1" bid (sort lvl) $
-    pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort meta_lvl)
+    pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort level.zero)
 | c@(const       x lvls) _ := let xR := x.param p in
     /- do env ← get_env, env.get xR, /- fix: test only non current definitions -/ -/
     return (c, c, const xR lvls)
@@ -119,16 +118,16 @@ meta def expr.param' (p : nat) (meta_univ : bool) : expr →
 | exp@_ _ := fail $
   "expr.param': expression " ++ exp.to_string ++ " is not translatable"
 
-meta def expr.param (t : expr) (p := 2) (meta_univ := ff) (lconst := mk_name_map) :=
-  expr.param' p meta_univ t lconst
+meta def expr.param (t : expr) (p := 2) (lconst := mk_name_map) :=
+  expr.param' p t lconst
 
-meta def param.fresh_from_pis (p := 2) (meta_univ := ff) :
+meta def param.fresh_from_pis (p := 2) :
       name_map (expr × expr × expr) → option ℕ → expr →
     tactic ((list expr × list expr × list expr) × name_map (expr × expr × expr) × expr)
   | lconsts (some nat.zero) ty := return (([], [], []), lconsts, ty)
   | lconsts n (pi x binfo α body) := do
       let n := (λ x : ℕ, x - 1) <$> n,
-      (α0, α1, αR) ← α.param p meta_univ lconsts,
+      (α0, α1, αR) ← α.param p lconsts,
       ((f0, f1, fR), lconsts, ty') ← param.intro lconsts x α0 α1 αR body,
       /- trace ("param.fresh_from_pis recursive call", n), -/
       ((fs0, fs1, fsR), lconsts, rest) ← param.fresh_from_pis lconsts n ty',
@@ -206,37 +205,37 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   let lvls := univs.map level.param,
   trace ("lvls", lvls),
   rec ← pure $ const rec_name lvls,
-  Rrec ← mk_const Rrec_name,
+  Rrec ← pure $ const Rrec_name lvls,
   trace ("rec:", rec),
   (rec_ty0, rec_ty1, rec_tyR) ← rec_ty.param p,
   let rec_tyRrr := rec_tyR.mk_subst_or_app [rec, rec],
   trace ("rec_tyRrr:", rec_tyRrr),
   (params@(params0, params1, paramsR), lconsts, rec_ty_no_params) ← 
-    param.fresh_from_pis p ff mk_name_map (some nparams) rec_ty,
+    param.fresh_from_pis p mk_name_map (some nparams) rec_ty,
   trace ("params:", params),
   (pred@([pred0], [pred1], [predR]), lconsts, rec_ty_ctors) ← 
-    param.fresh_from_pis p ff lconsts (some 1) rec_ty_no_params,
+    param.fresh_from_pis p lconsts (some 1) rec_ty_no_params,
   trace ("pred:", pred),
   (cases@(cases0, cases1, casesR), lconsts, rec_ty_indices) ←
-    param.fresh_from_pis p ff lconsts (some ctors.length) rec_ty_ctors,
+    param.fresh_from_pis p lconsts (some ctors.length) rec_ty_ctors,
   trace ("cases:", cases),
   (indices@(indices0, indices1, indicesR), lconsts, rec_ty_ind) ←
-    param.fresh_from_pis p ff lconsts (some nindices) rec_ty_indices,
+    param.fresh_from_pis p lconsts (some nindices) rec_ty_indices,
   trace ("indices:", indices),
   (ind@([ind0], [ind1], [indR]), lconsts, rec_ty_stripped) ←
-    param.fresh_from_pis p ff lconsts (some 1) rec_ty_ind,
+    param.fresh_from_pis p lconsts (some 1) rec_ty_ind,
   trace ("ind:", ind),
   trace ("lconsts:", lconsts),
-  (_, _, PntR) ← (pred0.mk_app (indices0 ++ [ind0])).param p ff lconsts,
+  (_, _, PntR) ← (pred0.mk_app (indices0 ++ [ind0])).param p lconsts,
   trace ("PntR:", PntR),
   Rcases ← (list.zip ctors cases0).mmap (λ ⟨n, e⟩, do
     decl ← get_decl n,
     let ctor_ty := decl.type,
     (params@(params0, params1, paramsR), lconsts, ctor_ty_noparams) ←
-      param.fresh_from_pis  p ff mk_name_map (some nparams) ctor_ty,
+      param.fresh_from_pis  p mk_name_map (some nparams) ctor_ty,
     (args@(args0, args1, argsR), lconsts, ctor_ret_ty) ←
-      param.fresh_from_pis  p ff lconsts none ctor_ty_noparams,
-    (_, _, ebuR) ← (mk_app e $ params0 ++ args0).param p ff lconsts,
+      param.fresh_from_pis  p lconsts none ctor_ty_noparams,
+    (_, _, ebuR) ← (mk_app e $ params0 ++ args0).param p lconsts,
     let recargs := args0.filter (λ a, n = (const_name $ hdapp $ concl $ local_type a)),
     rec01args ← recargs.mfoldl (λ v a, do
       rec0 ← mk_mvar, rec1 ← mk_mvar,
@@ -256,10 +255,10 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   let recR := expr.mk_bindings lam
    (param.entangle params ++ param.entangle pred ++ param.entangle cases) rec_bodyR,
   trace ("recR:", recR),
-  infer_type recR >>= λ btyR, unify rec_tyRrr btyR transparency.all,
+  /- infer_type recR >>= λ btyR, unify rec_tyRrr btyR transparency.all,
   recR_unif ← instantiate_mvars recR,
-  trace ("recR_unif:", recR_unif),
-  add_decl $ mk_definition ((n ++ "rec").param 2) univs rec_tyRrr recR_unif
+  trace ("recR_unif:", recR_unif), -/
+  add_decl $ mk_definition ((n ++ "rec").param 2) univs rec_tyRrr recR
  
 meta def param.def (p := 2) (n : name) : tactic unit := do
   env ← get_env,
@@ -271,18 +270,18 @@ meta def param.def (p := 2) (n : name) : tactic unit := do
     trace $ ("def fbody:", to_string fbody),
     let body := env.unfold_all_macros fbody,
     trace $ ("def body:", to_string body),
-    (_, _, αR) ← α.param 2 tt,
+    (_, _, αR) ← α.param 2,
     /- trace ("def αR:", αR), -/
-    (_, _, bodyR) ← body.param 2 ff,
+    (_, _, bodyR) ← body.param 2,
     trace ("def bodyR:", bodyR),
     d ← return $ const n (univs.map level.param),
     let tyR := αR.mk_subst_or_app [d, d],
     trace ("def tyR:", tyR),
     infer_type bodyR >>= λ btyR, unify tyR btyR transparency.all,
-    tyR_unif ← instantiate_mvars tyR,
-    trace ("def tyR_unif:", tyR_unif),
+    /- tyR_unif ← instantiate_mvars tyR,
+    trace ("def tyR_unif:", tyR_unif), -/
     /- trace ("def tyR_unif:", tyR_unif.to_raw_fmt), -/
-    add_decl $ mk_definition (n.param 2) univs tyR_unif bodyR,
+    add_decl $ mk_definition (n.param 2) univs tyR bodyR,
     trace ("=======================")
   | _ := fail $ "param.def:  not a definition"
   end
@@ -305,9 +304,28 @@ meta def param_cmd (_ : parse $ tk "#param") : lean.parser unit := do
 universes u v l
 #print empty.rec
 #param empty
-#check empty.param.«2»
+#print empty.param.«2»
+#print empty.param.«2».rec
+
+set_option formatter.hide_full_terms false
+
+def empty.rec.type := Π (C : empty → Sort l) (n : empty), C n
+#param empty.rec.type
+#print empty.rec.type.param.«2»
 
 run_cmd (do param.recursor 2 "empty")
+
+def test :
+  ∀ (C0 C1 : empty → Sort l)
+    (CR : Π (a0 a1 : empty), empty.param.«2» a0 a1 → C0 a0 → C1 a1 → Prop)
+    (n0 n1 : empty) (nR : empty.param.«2» n0 n1),
+  CR n0 n1 nR (empty.rec C0 n0) (empty.rec C1 n1)
+ := λ (C0 C1 : empty → Sort l)
+      (CR : Π (n0 n1 : empty), empty.param.«2» n0 n1 → C0 n0 → C1 n1 → Prop)
+    (n0 n1 : empty) (nR : empty.param.«2» n0 n1),
+    @empty.param.«2».rec
+      (λ (n0 n1 : empty) (nR : empty.param.«2» n0 n1), 
+      CR n0 n1 nR (empty.rec.{l} C0 n0) (empty.rec.{l} C1 n1)) n0 n1 nR
 
 #param nonempty
 #param punit pprod bool nat list.
