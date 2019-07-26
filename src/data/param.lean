@@ -33,6 +33,16 @@ meta def expr.strip_lam : expr → nat → option expr
 | t 0 := return t
 | _ _ := none
 
+meta def concl : expr → expr | (pi _ _ _ ty) := concl ty | ty := ty
+meta def hdapp : expr → expr | (expr.app x _) := hdapp x | x := x
+
+meta def split_pis : option ℕ → expr → list expr × expr
+| (some 0) ty := ([], ty)
+| n (pi _ _ α ty) := 
+  let (αs, ty) := split_pis ((λ x : ℕ, x - 1) <$> n) ty in
+  (α :: αs, ty)
+| _ ty := ([], ty)
+
 meta def name.ext (ext : string) (x : name) : name :=
   (x.to_string ++ ext : string)
 
@@ -68,34 +78,41 @@ meta def environment.inductive_type_of_rec (env : environment) (n : name) : opti
   | _ := none
   end
 
-meta def expr.param' (p : nat) : expr →
+meta def expr.param' (p : nat) (lmap : name_map name): expr →
+  rb_map level name →
   name_map (expr × expr × expr) →
-  tactic (expr × expr × expr)
-| (var         db)  _ := fail $ "expr.param: cannot translate a var"
-| (sort        lvl) _ := do
-  return (sort lvl, sort lvl,
-    lam "α0" bid (sort lvl) $ lam "α1" bid (sort lvl) $
+  tactic (rb_map level name × (expr × expr × expr))
+| (var         db) umap _ := fail $ "expr.param: cannot translate a var"
+| (sort        lvl) umap _ := do
+  let lvl1 := lvl.instantiate (lmap.map level.param).to_list,
+  nameR ← match umap.find lvl with
+  | some nameR := return nameR
+  | none := mk_fresh_name
+  end,
+  let lvlR := level.param nameR,
+  return (umap.insert lvl nameR, sort lvl, sort lvl,
+    lam "α0" bid (sort lvl) $ lam "α1" bid (sort lvl1) $
     pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort level.zero)
-| c@(const       x lvls) _ := let xR := x.param p in
+| c@(const       x lvls) umap _ := let xR := x.param p in
     /- do env ← get_env, env.get xR, /- fix: test only non current definitions -/ -/
-    return (c, c, const xR lvls)
-| c@(local_const x pry binfo α) lconsts := lconsts.find x
-| (app u v) lconsts := do
-  (u0, u1, uR) ← u.param' lconsts,
-  (v0, v1, vR) ← v.param' lconsts, /- trace $ "u= " ++ to_string u ++ ";   uR= " ++ to_string uR, -/
-  return (app u0 v0, app u1 v1, uR v0 v1 vR)
-| (lam x binfo α body) lconsts := do
-  (α0, α1, αR) ← α.param' lconsts,
+    return (umap, c, c, const xR lvls)
+| c@(local_const x pry binfo α) umap lconsts := do xs ← lconsts.find x, return (umap, xs)
+| (app u v) umap lconsts := do
+  (umap, u0, u1, uR) ← u.param' umap lconsts,
+  (umap, v0, v1, vR) ← v.param' umap lconsts, /- trace $ "u= " ++ to_string u ++ ";   uR= " ++ to_string uR, -/
+  return (umap, app u0 v0, app u1 v1, uR v0 v1 vR)
+| (lam x binfo α body) umap lconsts := do
+  (umap, α0, α1, αR) ← α.param' umap lconsts,
   ((x0, x1, xR), lconstsx, bodyx) ← param.intro lconsts x α0 α1 αR body,
-  (body0, body1, bodyR) ← bodyx.param' lconstsx,
+  (umap, body0, body1, bodyR) ← bodyx.param' umap lconstsx,
   let t0 := body0.mk_binding lam x0,
   let t1 := body1.mk_binding lam x1,
   let tR := ((bodyR.mk_binding lam xR).mk_binding lam x1).mk_binding lam x0,
-  return (t0, t1, tR)
-| (pi x binfo α body) lconsts := do
-  (α0, α1, αR) ← α.param' lconsts,
+  return (umap, t0, t1, tR)
+| (pi x binfo α body) umap lconsts := do
+  (umap, α0, α1, αR) ← α.param' umap lconsts,
   ((x0, x1, xR), lconstsx, bodyx) ← param.intro lconsts x α0 α1 αR body,
-  (body0, body1, bodyR) ← bodyx.param' lconstsx,
+  (umap, body0, body1, bodyR) ← bodyx.param' umap lconstsx,
   let t0 := body0.mk_binding pi x0,
   let t1 := body1.mk_binding pi x1,
   f0 ← mk_local_def "f0" t0,
@@ -103,8 +120,8 @@ meta def expr.param' (p : nat) : expr →
   let tR := (((((bodyR.mk_subst_or_app [f0 x0, f1 x1]
      ).mk_binding pi xR).mk_binding pi x1).mk_binding pi x0
      ).mk_binding lam f1).mk_binding lam f0,
-  return (t0, t1, tR)
-| (elet  x α val body) lconsts := fail $
+  return (umap, t0, t1, tR)
+| (elet  x α val body) umap lconsts := fail $
   "param': elet not implemented"
   -- [WRONG CODE!!!]
   -- (α0, α1, αR) ← α.param',
@@ -115,11 +132,15 @@ meta def expr.param' (p : nat) : expr →
   -- let tR := t0_ $ t1_ $ elet (x.ext "R") stripped_αR valR bodyR,
   -- return (t0_ body0, t1_ body1, tR)
   -- [/WRONG CODE!!!]
-| exp@_ _ := fail $
+| exp@_ _ _ := fail $
   "expr.param': expression " ++ exp.to_string ++ " is not translatable"
 
-meta def expr.param (t : expr) (p := 2) (lconst := mk_name_map) :=
-  expr.param' p t lconst
+meta def mk_level_map {data : Type} := rb_map.mk_core data
+  (λ l1 l2, if level.lt l1 l2 then ordering.lt else if l1 = l2 then ordering.eq else ordering.gt)
+
+meta def expr.param (t : expr) (p := 2) (lmap := mk_name_map)
+  (umap := mk_level_map) (lconst := mk_name_map) :=
+  expr.param' p lmap t umap lconst
 
 meta def param.fresh_from_pis (p := 2) :
       name_map (expr × expr × expr) → option ℕ → expr →
@@ -134,15 +155,6 @@ meta def param.fresh_from_pis (p := 2) :
       return ((f0 :: fs0, f1 :: fs1, fR :: fsR), lconsts, rest)
   | _ _ _ := fail $ "param.fresh_from_pi: not enough pi"
 
-meta def concl : expr → expr | (pi _ _ _ ty) := concl ty | ty := ty
-meta def hdapp : expr → expr | (expr.app x _) := hdapp x | x := x
-
-meta def split_pis : option ℕ → expr → list expr × expr
-| (some 0) ty := ([], ty)
-| n (pi _ _ α ty) := 
-  let (αs, ty) := split_pis ((λ x : ℕ, x - 1) <$> n) ty in
-  (α :: αs, ty)
-| _ ty := ([], ty)
 
 meta def param.entangle : (list expr × list expr × list expr) → list expr
 | (x :: xs, y :: ys, z :: zs) := x :: y :: z :: param.entangle (xs, ys, zs)
