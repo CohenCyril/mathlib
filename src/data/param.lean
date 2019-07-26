@@ -90,9 +90,9 @@ meta def expr.param' (p : nat) (lmap : name_map name): expr →
   | none := mk_fresh_name
   end,
   let lvlR := level.param nameR,
-  return (umap.insert lvl nameR, sort lvl, sort lvl,
+  return (umap.insert lvl nameR, sort lvl, sort lvl1,
     lam "α0" bid (sort lvl) $ lam "α1" bid (sort lvl1) $
-    pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort level.zero)
+    pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort lvlR)
 | c@(const       x lvls) umap _ := let xR := x.param p in
     /- do env ← get_env, env.get xR, /- fix: test only non current definitions -/ -/
     return (umap, c, c, const xR lvls)
@@ -161,7 +161,7 @@ meta def param.entangle : (list expr × list expr × list expr) → list expr
 | _ := [] 
 
 meta def expr.mk_bindings (k : name → binder_info → expr → expr → expr)
-  (vars : list expr) (e : expr) : expr := vars.reverse.foldl (mk_binding k) e
+  (vars : list expr) (e : expr) : expr := vars.foldr (mk_binding k) e
 
 #print declaration
 
@@ -186,24 +186,28 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
   let nparams := env.inductive_num_params n,
   let nindices := env.inductive_num_indices n,
   let univs := ind_decl.univ_params,
+  lmap ← univs.mfoldr (λ l lmap, rb_map.insert lmap l <$> mk_fresh_name) mk_name_map,
+  let univs1 := lmap.values,
   let lvls := univs.map level.param,
-  i ← return $ const n lvls,
+  let i : expr := const n lvls,
   let ty := ind_decl.type,
   trace ("lvls", lvls),
   trace ("ctors:", ctors),
-  ctorsR ← ctors.mmap (λ n : name, do
+  umap_ctorsR ← ctors.mfoldr (λ (n : name) (umap_ctorsR : rb_map level name × _), do
+    let ⟨umap, ctorsR⟩ := umap_ctorsR,
     decl ← get_decl n,
     c ← pure $ const n lvls,
     let ty := decl.type,
-    (ty0, ty1, tyR) ← ty.param p,
-    let tyRcc := tyR.mk_subst_or_app [c, c], 
-    return (n.param p, tyRcc)),
+    (umap, ty0, ty1, tyR) ← ty.param p lmap umap mk_name_map,
+    let tyRcc := tyR.mk_subst_or_app [c, c],
+    return (umap, (n.param p, tyRcc) :: ctorsR)) (mk_level_map, []),
+  let ⟨umap, ctorsR⟩ := umap_ctorsR,
   trace $ ("ctorsR:", to_string ctorsR),
-  (ty0, ty1, tyR) ← ty.param p,
+  (umap, ty0, ty1, tyR) ← ty.param p lmap umap mk_name_map,
   trace $ ("tyR", to_string tyR),
   let tyRii := tyR.mk_subst_or_app [i, i],
   trace $ ("tyRii", to_string tyRii),
-  add_inductive (n.param p) univs ((p + 1) * nparams) tyRii ctorsR,
+  add_inductive (n.param p) (univs ++ univs1 ++ umap.values) ((p + 1) * nparams) tyRii ctorsR,
   trace ("=========== inductive added =============")
 
 meta def param.recursor (p := 2) (n : name) : tactic unit := do
@@ -256,7 +260,7 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
       param.fresh_from_pis  p lconsts none ctor_ty_noparams,
     (_, _, ebuR) ← (mk_app e $ params0 ++ args0).param p lconsts,
     let recargs := args0.filter (λ a, n = (const_name $ hdapp $ concl $ local_type a)),
-    rec01args ← recargs.mfoldl (λ v a, do
+    rec01args ← recargs.mfoldr (λ a v, do
       rec0 ← mk_mvar, rec1 ← mk_mvar,
       return $ rec0 :: rec1 :: v
     ) [],
@@ -320,11 +324,26 @@ meta def param_cmd (_ : parse $ tk "#param") : lean.parser unit := do
 -- Working examples --
 ----------------------
 
-universes u v l
+universes u u' v l w uu
 #print empty.rec
 #param empty
 #print empty.param.«2»
 #print empty.param.«2».rec
+#param nonempty
+
+
+inductive test : Π (α0 : Sort.{u}) (α1 : Sort.{v})
+  (αR : α0 -> α1 -> Sort.{w}) (x0 : nonempty.{u} α0) (x1 : nonempty.{v} α1), Sort.{u'}
+  | intro : Π (α0 : Sort.{u}) (α1 : Sort.{v}) 
+ (αR : α0 -> α1 -> Sort.{w}) (val0 : α0) (val1 : α1) (valR : αR val0 val1),
+  (test α0 α1 αR (nonempty.intro.{u} val0) (nonempty.intro.{v} val1))
+#print test
+
+#param punit pprod bool nat list.
+#param has_zero has_one has_neg has_add has_mul
+
+#param true false and or not.
+#param id
 
 set_option formatter.hide_full_terms false
 
@@ -386,12 +405,6 @@ def test :
       (λ (n0 n1 : empty) (nR : empty.param.«2» n0 n1), 
       CR n0 n1 nR (empty.rec.{l} C0 n0) (empty.rec.{l} C1 n1)) n0 n1 nR
 
-#param nonempty
-#param punit pprod bool nat list.
-#param has_zero has_one has_neg has_add has_mul
-
-#param true false and or not.
-#param id
 
 
 #print nat.param.«2»
