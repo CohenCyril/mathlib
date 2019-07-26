@@ -78,20 +78,22 @@ meta def environment.inductive_type_of_rec (env : environment) (n : name) : opti
   | _ := none
   end
 
-meta def expr.param' (p : nat) (umap : name_map name): expr →
+meta def expr.param' (p : nat) (umap : name_map (name × name)) : expr →
   name_map (expr × expr × expr) →
   tactic (expr × expr × expr)
 | (var         db) _ := fail $ "expr.param: cannot translate a var"
 | (sort        lvl) _ := do
-  let lvl1 := lvl.instantiate (umap.map level.param).to_list,
+  let lvl1 := lvl.instantiate (umap.map $ level.param ∘ prod.fst).to_list,
+  let lvlR := lvl.instantiate (umap.map $ level.param ∘ prod.snd).to_list,
   return (sort lvl, sort lvl1,
     lam "α0" bid (sort lvl) $ lam "α1" bid (sort lvl1) $
-    pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort level.zero)
+    pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort lvlR)
 | c@(const       x lvls) _ := do
     let xR := x.param p,
     /- do env ← get_env, env.get xR, /- fix: test only non current definitions -/ -/
-    let lvls1 := lvls.map (λ lvl, lvl.instantiate (umap.map level.param).to_list),
-    return (c, const x lvls1, const xR (lvls ++ lvls1))
+    let lvls1 := lvls.map (λ lvl, lvl.instantiate (umap.map $ level.param ∘ prod.fst).to_list),
+    let lvlsR := lvls.map (λ lvl, lvl.instantiate (umap.map $ level.param ∘ prod.snd).to_list),
+    return (c, const x lvls1, const xR (lvls ++ lvls1 ++ lvlsR))
 | c@(local_const x pry binfo α) lconsts := lconsts.find x
 | (app u v) lconsts := do
   (u0, u1, uR) ← u.param' lconsts,
@@ -137,7 +139,8 @@ meta def expr.param' (p : nat) (umap : name_map name): expr →
     "expr.param': expression " ++ exp.to_string ++ " is not translatable"
   end
 
-meta def expr.param (t : expr) (p := 2) (umap : name_map name) (lconst : name_map _) :=
+meta def expr.param (t : expr) (p := 2)
+    (umap : name_map (name × name)) (lconst : name_map _) :=
   expr.param' p umap t lconst
 
 meta def param.fresh_from_pis (p := 2) (umap  : _):
@@ -195,7 +198,8 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   let lvls := univs.map level.param,
   trace ("lvls", lvls),
   univs1 ← univs.mmap (λ _, mk_fresh_name),
-  let umap := rb_map.of_list (univs.zip univs1),
+  univsR ← univs.mmap (λ _, mk_fresh_name),
+  let umap := rb_map.of_list (univs.zip (univs1.zip univsR)),
   let lvls1 := univs1.map level.param,
   let rec : expr := const rec_name lvls,
   let rec1 : expr := const rec_name lvls1,
@@ -252,7 +256,7 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   /- infer_type recR >>= λ btyR, unify rec_tyRrr btyR transparency.all,
   recR_unif ← instantiate_mvars recR,
   trace ("recR_unif:", recR_unif), -/
-  add_decl $ mk_definition ((n ++ "rec").param 2) (univs ++ univs1) rec_tyRrr rec_tyRrr.mk_sorry
+  add_decl $ mk_definition ((n ++ "rec").param 2) (univs ++ univs1 ++ univsR) rec_tyRrr rec_tyRrr.mk_sorry
 
 meta def param.inductive (p := 2) (n : name) : tactic unit := do
   env ← get_env,
@@ -263,7 +267,8 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
   let nindices := env.inductive_num_indices n,
   let univs := ind_decl.univ_params,
   univs1 ← univs.mmap (λ _, mk_fresh_name),
-  let umap := rb_map.of_list (univs.zip univs1),
+  univsR ← univs.mmap (λ _, mk_fresh_name),
+  let umap := rb_map.of_list (univs.zip (univs1.zip univsR)),
   let lvls := univs.map level.param,
   let lvls1 := univs1.map level.param,
   let ty := ind_decl.type,
@@ -281,10 +286,10 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
     return (n.param p, tyRcc)),
   trace $ ("ctorsR:", to_string ctorsR),
   trace ("=========== adding inductive ============="),
-  trace $ "universes " ++ (univs ++ univs1).foldr (λ u s, to_string u ++ " " ++ s) "",
+  trace $ "universes " ++ (univs ++ univs1 ++ univsR).foldr (λ u s, to_string u ++ " " ++ s) "",
   trace $ "inductive " ++ to_string n ++ " : " ++ to_string tyRii,
   ctorsR.mmap' (λ ⟨n, ty⟩, trace $ "| " ++ to_string n ++ " : " ++ to_string ty),
-  add_inductive (n.param p) (univs ++ univs1) ((p + 1) * nparams) tyRii ctorsR,
+  add_inductive (n.param p) (univs ++ univs1 ++ univsR) ((p + 1) * nparams) tyRii ctorsR,
   trace ("=========== inductive added ============="),
   param.recursor p n
 
@@ -296,7 +301,8 @@ meta def param.def (p := 2) (n : name) : tactic unit := do
   match decl with
   | (declaration.defn _ univs α fbody _ _) := do
     univs1 ← univs.mmap (λ _, mk_fresh_name),
-    let umap := rb_map.of_list (univs.zip univs1),
+    univsR ← univs.mmap (λ _, mk_fresh_name),
+    let umap := rb_map.of_list (univs.zip (univs1.zip univsR)),
     let (lvls, lvls1) := (univs.map level.param, univs1.map level.param),
     trace ("def type:", α),
     trace $ ("def fbody:", to_string fbody),
@@ -315,7 +321,7 @@ meta def param.def (p := 2) (n : name) : tactic unit := do
     /- trace ("def tyR_unif:", tyR_unif.to_raw_fmt), -/
     trace $ "def " ++ to_string (n.param 2) ++ " : " ++ to_string tyR ++ " :=",
     trace $ bodyR,
-    add_decl $ mk_definition (n.param 2) (univs ++ univs1) tyR bodyR,
+    add_decl $ mk_definition (n.param 2) (univs ++ univs1 ++ univsR) tyR bodyR,
     trace ("=======================")
   | _ := fail $ "param.def:  not a definition"
   end
@@ -345,6 +351,14 @@ universes u u' v v' l l' w uu
 #param bool
 #param nat
 #param list
+
+inductive list.param (T0 : Type.{u}) (T1 : Type.{u'}) (TR : T0 -> T1 -> Type.{max u u'}) :
+  Π (x0 : list.{u} T0) (x1 : list.{u'} T1), Type.{max u u'}
+| nil : list.param (list.nil.{u}) (list.nil.{u'})
+| cons : Π (hd0 : T0) (hd1 : T1) (hdR : TR hd0 hd1)
+           (tl0 : list.{u} T0) (tl1 : list.{u'} T1) (tlR : list.param tl0 tl1), 
+  (list.param (list.cons.{u} hd0 tl0) (list.cons.{u'} hd1 tl1))
+
 #param pprod
 #param has_zero has_one has_neg has_add has_mul
 
