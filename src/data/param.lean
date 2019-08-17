@@ -14,13 +14,16 @@ in Computer Science Logic 2012 (CSL’12).
 -/
 
 import tactic
+import category.monad.basic category.monad.writer
 open expr native tactic
 open lean.parser interactive
 set_option pp.universes true
 
+universes u u' v v' l l' w uu
+
 meta def expr.instantiate_lam (nv : expr) : expr → expr
 | (lam nm bi tp bd) := bd.instantiate_var nv
-| e := app e nv
+| e := mk_app e [nv]
 
 meta def expr.mk_subst_or_app : expr → list expr → expr
 | e []      := e
@@ -33,8 +36,9 @@ meta def expr.strip_lam : expr → nat → option expr
 | t 0 := return t
 | _ _ := none
 
+-- 
 meta def concl : expr → expr | (pi _ _ _ ty) := concl ty | ty := ty
-meta def hdapp : expr → expr | (expr.app x _) := hdapp x | x := x
+meta def hdapp : expr → expr | (app x _)     := hdapp x  | x := x
 
 meta def split_pis : option ℕ → expr → list expr × expr
 | (some 0) ty := ([], ty)
@@ -42,6 +46,16 @@ meta def split_pis : option ℕ → expr → list expr × expr
   let (αs, ty) := split_pis ((λ x : ℕ, x - 1) <$> n) ty in
   (α :: αs, ty)
 | _ ty := ([], ty)
+
+inductive test : Type (max (v+1) v u)
+| zero : test
+| one (t : forall x : Type v, list x -> Sort u): test
+#check (forall test : Type w, forall x : Type v, list x -> Sort u -> test)
+#print test
+
+meta def slevel : expr → level | (sort lvl) := lvl | _ := level.zero
+meta def lparam : level → name | (level.param n) := n | _ := ""
+
 
 meta def name.ext (ext : string) (x : name) : name :=
   (x.to_string ++ ext : string)
@@ -77,28 +91,44 @@ meta def environment.inductive_type_of_rec (env : environment) (n : name) : opti
   | (exceptional.success decl) := env.trailing_pi_type_of decl.type
   | _ := none
   end
+/- 
+meta def level_of {elab : bool} : expr elab → list level
+| (var n) := []
+| (sort l) := [l]
+| (const n ls) := ls
+| (mvar n m t)   := level_of t
+| (local_const n m bi t) := level_of t
+| (app e f) := level_of e ++ level_of f
+| (lam n bi e t) := level_of e ++ level_of t
+| (pi n bi e t) := level_of e ++ level_of t
+| (elet n g e f) := level_of g ++ level_of e ++ level_of f 
+| (macro d args) := [] -/
 
-meta def expr.param' (p : nat) (umap : name_map (name × name)) : expr →
+meta def expr.param' (current : expr := mk_true) 
+  (p : nat) (umap : name_map name) : expr →
   name_map (expr × expr × expr) →
   tactic (expr × expr × expr)
 | (var         db) _ := fail $ "expr.param: cannot translate a var"
 | (sort        lvl) _ := do
-  let lvl1 := lvl.instantiate (umap.map $ level.param ∘ prod.fst).to_list,
-  let lvlR := lvl.instantiate (umap.map $ level.param ∘ prod.snd).to_list,
+  let lvl1 := lvl.instantiate (umap.map $ level.param).to_list,
+  lvlR ← get_unused_name "u",
   return (sort lvl, sort lvl1,
     lam "α0" bid (sort lvl) $ lam "α1" bid (sort lvl1) $
     pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort lvlR)
 | c@(const       x lvls) _ := do
     let xR := x.param p,
+    let lvls1 := lvls.map (λ lvl, lvl.instantiate (umap.map $ level.param).to_list),
+    if xR = current.local_pp_name then return (c, const x lvls1, current) else do
+    env ← get_env,
+    xR_decl ← env.get xR,
     /- do env ← get_env, env.get xR, /- fix: test only non current definitions -/ -/
-    let lvls1 := lvls.map (λ lvl, lvl.instantiate (umap.map $ level.param ∘ prod.fst).to_list),
-    let lvlsR := lvls.map (λ lvl, lvl.instantiate (umap.map $ level.param ∘ prod.snd).to_list),
+    lvlsR ← mk_num_meta_univs $ (xR_decl.univ_params.length - 2 * lvls.length),
     return (c, const x lvls1, const xR (lvls ++ lvls1 ++ lvlsR))
 | c@(local_const x pry binfo α) lconsts := lconsts.find x
 | (app u v) lconsts := do
   (u0, u1, uR) ← u.param' lconsts,
   (v0, v1, vR) ← v.param' lconsts, /- trace $ "u= " ++ to_string u ++ ";   uR= " ++ to_string uR, -/
-  return (app u0 v0, app u1 v1, mk_app uR [v0, v1, vR])
+  return (mk_app u0 [v0], mk_app u1 [v1], mk_app uR [v0, v1, vR])
 | (lam x binfo α body) lconsts := do
   (α0, α1, αR) ← α.param' lconsts,
   ((x0, x1, xR), lconsts, body) ← param.intro lconsts x α0 α1 αR body,
@@ -139,9 +169,9 @@ meta def expr.param' (p : nat) (umap : name_map (name × name)) : expr →
     "expr.param': expression " ++ exp.to_string ++ " is not translatable"
   end
 
-meta def expr.param (t : expr) (p := 2)
-    (umap : name_map (name × name)) (lconst : name_map _) :=
-  expr.param' p umap t lconst
+meta def expr.param (t : expr) (current : expr := var 0) (p := 2)
+    (umap : name_map name) (lconst : name_map _) :=
+  expr.param' current p umap t lconst
 
 meta def param.fresh_from_pis (p := 2) (umap  : _):
       name_map (expr × expr × expr) → option ℕ → expr →
@@ -149,7 +179,7 @@ meta def param.fresh_from_pis (p := 2) (umap  : _):
   | lconsts (some nat.zero) ty := return (([], [], []), lconsts, ty)
   | lconsts n (pi x binfo α body) := do
       let n := (λ x : ℕ, x - 1) <$> n,
-      (α0, α1, αR) ← α.param p umap lconsts,
+      (α0, α1, αR) ← α.param mk_true p umap lconsts,
       ((f0, f1, fR), lconsts, ty') ← param.intro lconsts x α0 α1 αR body,
       /- trace ("param.fresh_from_pis recursive call", n), -/
       ((fs0, fs1, fsR), lconsts, rest) ← param.fresh_from_pis lconsts n ty',
@@ -172,13 +202,95 @@ meta def expr.mk_bindings (k : name → binder_info → expr → expr → expr)
 
 -- #set_option profiler true
 
--- #reduce nat.pred 10000
+ -- #eval nat.pred 10000 
+#eval to_string $ level.normalize $
+  level.succ (level.max (level.succ (level.mvar "u")) (level.succ (level.mvar "v")))
 
+inductive propind : Prop
+| zero (α : Sort u) : propind
+#print propind
 -- #run_cmd do
 --   let n := `(nat.pred 10),
 --   nfn ← tactic.whnf n,
 --   trace n
+instance list.has_one (α : Type u) : has_one (list α) := ⟨[]⟩
+instance list.has_mul (α : Type u) [decidable_eq α] : has_mul (list α) := ⟨list.union⟩
 
+meta def level.parametrize : level → writer (list name) level
+| (level.succ l)     := level.succ <$> l.parametrize
+| (level.max l1 l2)  := level.max <$> l1.parametrize <*> l2.parametrize
+| (level.imax l1 l2) := level.imax <$> l1.parametrize <*> l2.parametrize
+| (level.mvar  n)    := do tell [n], pure $ level.param n
+| e                  := pure e
+
+meta def expr.uparametrize : expr → writer (list name) expr
+| (sort l) := sort <$> l.parametrize
+| (const n ls) := const n <$> ls.mmap (level.parametrize)
+| (mvar n m t) := mvar n m <$> t.uparametrize
+| (local_const n m bi t) := local_const n m bi <$> t.uparametrize
+| (app e f) := app <$> e.uparametrize <*> f.uparametrize
+| (lam n bi e t) := lam n bi <$> e.uparametrize <*> t.uparametrize
+| (pi n bi e t) := pi n bi <$> e.uparametrize <*> t.uparametrize
+| (elet n g e f) :=
+   elet n <$> g.uparametrize <*> e.uparametrize <*> f.uparametrize
+| e@(var n) := pure e
+| e@(macro d args) := pure e
+
+meta def elaborate_definition
+ (ty : expr) (term : expr) : tactic (list name × expr × expr) :=
+do
+  infer_type term >>= λ ty_term, unify ty_term ty transparency.all,
+  ity ← instantiate_mvars ty,
+  iterm ← instantiate_mvars term,
+  let ((pty, pterm), us) := (do
+      pty ← ity.uparametrize,
+      pterm ← iterm.uparametrize,
+      pure (pty, pterm)).run in
+  return (us, pty, pterm)
+
+meta def expr.lconstify (fn cn : name) (ty : expr) : expr → expr
+| e@(const n ls) := if n = cn then local_const fn cn binder_info.default ty else e 
+| (mvar n m t) := mvar n m t.lconstify
+| (local_const n m bi t) := local_const n m bi t.lconstify
+| (app e f) := mk_app e.lconstify [f.lconstify]
+| (lam n bi e t) := lam n bi e.lconstify t.lconstify
+| (pi n bi e t) := pi n bi e.lconstify t.lconstify
+| (elet n g e f) := elet n g.lconstify e.lconstify f.lconstify
+| e := e
+
+meta def expr.constify (fn : name) (lvls : list level) : expr → expr
+| (local_const n m bi t) :=
+   if n = fn then const m lvls else 
+   local_const n m bi t.constify
+| (mvar n m t) := mvar n m t.constify
+| (app e f) := app e.constify f.constify
+| (lam n bi e t) := lam n bi e.constify t.constify
+| (pi n bi e t) := pi n bi e.constify t.constify
+| (elet n g e f) := elet n g.constify e.constify f.constify
+| e := e
+
+meta def elab_wrt (x : expr) (e : expr) : tactic expr := do
+  type_check (e.mk_binding lam x),
+  trace $ "elab_wrt: " ++ to_string e,
+  instantiate_mvars e
+  
+meta def elaborate_inductive (x : expr)
+ (ty : expr) (ctors : list expr) : tactic (list name × expr × list expr) :=
+do
+  ity ← elab_wrt x ty,
+  let (pty, pty_univs) := ity.uparametrize.run,
+  let p := lparam $ slevel $ concl pty,
+  let pty_univs := pty_univs.remove_all [p],
+  let pty0 := pty.instantiate_univ_params [(p, level.zero)],
+  elctors ← ctors.mmap (elab_wrt x),
+  let (plctors, ctor_univs) := (elctors.mmap expr.uparametrize).run,
+  clvls ← plctors.mmap (λ plctor, level.normalize <$> slevel <$> infer_type plctor),
+  let univs := pty_univs * ctor_univs,
+  let indlvl := (clvls.foldr level.max level.zero).normalize,
+  let ptyu := if ctors.length ≤ 1 then pty0 else
+    pty.instantiate_univ_params [(p, indlvl)],
+  let ectors := plctors.map (λ lctor, lctor.constify (x.local_uniq_name) (univs.map (λ u, level.param u))),
+  return (univs, ptyu, ectors)
 
 meta def param.recursor (p := 2) (n : name) : tactic unit := do
   env ← get_env,
@@ -198,14 +310,13 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   let lvls := univs.map level.param,
   trace ("lvls", lvls),
   univs1 ← univs.mmap (λ _, mk_fresh_name),
-  univsR ← univs.mmap (λ _, mk_fresh_name),
-  let umap := rb_map.of_list (univs.zip (univs1.zip univsR)),
+  let umap := rb_map.of_list (univs.zip univs1),
   let lvls1 := univs1.map level.param,
   let rec : expr := const rec_name lvls,
   let rec1 : expr := const rec_name lvls1,
   let Rrec : expr := const Rrec_name (lvls ++ lvls1),
   trace ("rec:", rec),
-  (rec_ty0, rec_ty1, rec_tyR) ← rec_ty.param p umap mk_name_map,
+  (rec_ty0, rec_ty1, rec_tyR) ← rec_ty.param mk_true p umap mk_name_map,
   let rec_tyRrr := rec_tyR.mk_subst_or_app [rec, rec1],
   trace ("rec_tyRrr:", rec_tyRrr),/- 
   (params@(params0, params1, paramsR), lconsts, rec_ty_no_params) ← 
@@ -256,7 +367,8 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   /- infer_type recR >>= λ btyR, unify rec_tyRrr btyR transparency.all,
   recR_unif ← instantiate_mvars recR,
   trace ("recR_unif:", recR_unif), -/
-  add_decl $ mk_definition ((n ++ "rec").param 2) (univs ++ univs1 ++ univsR) rec_tyRrr rec_tyRrr.mk_sorry
+  (univsR, rec_tyRrr, recR) ← elaborate_definition rec_tyRrr rec_tyRrr.mk_sorry,
+  add_decl $ mk_definition ((n ++ "rec").param 2) (univs ++ univs1 ++ univsR) rec_tyRrr recR
 
 meta def param.inductive (p := 2) (n : name) : tactic unit := do
   env ← get_env,
@@ -266,33 +378,39 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
   let nparams := env.inductive_num_params n,
   let nindices := env.inductive_num_indices n,
   let univs := ind_decl.univ_params,
-  univs1 ← univs.mmap (λ _, mk_fresh_name),
-  univsR ← univs.mmap (λ _, mk_fresh_name),
-  let umap := rb_map.of_list (univs.zip (univs1.zip univsR)),
+  univs1 ← univs.mmap (λ u, get_unused_name u),
+  let umap := rb_map.of_list (univs.zip univs1),
   let lvls := univs.map level.param,
   let lvls1 := univs1.map level.param,
   let ty := ind_decl.type,
-  (ty0, ty1, tyR) ← ty.param p umap mk_name_map,
+  let nR := n.param p,
+  (ty0, ty1, tyR) ← ty.param mk_true p umap mk_name_map,
   trace $ ("tyR", to_string tyR),
   let tyRii := tyR.mk_subst_or_app [const n lvls, const n lvls1],
+  cn ← mk_local_def nR tyRii,
   trace $ ("tyRii", to_string tyRii),
   trace ("lvls", lvls),
   trace ("ctors:", ctors),
   ctorsR ← ctors.mmap (λ (n : name), do
     decl ← get_decl n,
     let ty := decl.type,
-    (ty0, ty1, tyR) ← ty.param p umap mk_name_map,
+    trace $ "param ctor " ++ to_string n,
+    (ty0, ty1, tyR) ← ty.param cn p umap mk_name_map,
     let tyRcc := tyR.mk_subst_or_app [const n lvls, const n lvls1],
     return (n.param p, tyRcc)),
+  let (cnamesR, ctysR) := ctorsR.unzip,
+  trace ("=========== elaborating inductive ============="),
+  (univsR, tyRii, ctysR) ← elaborate_inductive cn tyRii ctysR,
+  let ctorsR := list.zip cnamesR ctysR,
   trace $ ("ctorsR:", to_string ctorsR),
   trace ("=========== adding inductive ============="),
   trace $ "universes " ++ (univs ++ univs1 ++ univsR).foldr (λ u s, to_string u ++ " " ++ s) "",
   trace $ "inductive " ++ to_string n ++ " : " ++ to_string tyRii,
   ctorsR.mmap' (λ ⟨n, ty⟩, trace $ "| " ++ to_string n ++ " : " ++ to_string ty),
   add_inductive (n.param p) (univs ++ univs1 ++ univsR) ((p + 1) * nparams) tyRii ctorsR,
-  trace ("=========== inductive added ============="),
-  param.recursor p n
-
+  trace ("=========== inductive added =============")
+/-   param.recursor p n
+ -/
  
 meta def param.def (p := 2) (n : name) : tactic unit := do
   env ← get_env,
@@ -300,17 +418,16 @@ meta def param.def (p := 2) (n : name) : tactic unit := do
   decl ← env.get n,
   match decl with
   | (declaration.defn _ univs α fbody _ _) := do
-    univs1 ← univs.mmap (λ _, mk_fresh_name),
-    univsR ← univs.mmap (λ _, mk_fresh_name),
-    let umap := rb_map.of_list (univs.zip (univs1.zip univsR)),
+    univs1 ← univs.mmap (λ u, get_unused_name u),
+    let umap := rb_map.of_list (univs.zip univs1),
     let (lvls, lvls1) := (univs.map level.param, univs1.map level.param),
     trace ("def type:", α),
     trace $ ("def fbody:", to_string fbody),
     let body := env.unfold_all_macros fbody,
     trace $ ("def body:", body.to_raw_fmt),
-    (_, _, αR) ← α.param 2 umap mk_name_map,
+    (_, _, αR) ← α.param mk_true 2 umap mk_name_map,
     /- trace ("def αR:", αR), -/
-    (_, _, bodyR) ← body.param 2 umap mk_name_map,
+    (_, _, bodyR) ← body.param mk_true 2 umap mk_name_map,
     trace ("def bodyR:", bodyR.to_raw_fmt),
     let tyR := αR.mk_subst_or_app [const n lvls, const n lvls1],
     trace ("def tyR:", tyR),
@@ -319,6 +436,7 @@ meta def param.def (p := 2) (n : name) : tactic unit := do
     tyR_unif ← instantiate_mvars tyR,
     trace ("def tyR_unif:", tyR_unif), -/
     /- trace ("def tyR_unif:", tyR_unif.to_raw_fmt), -/
+    (univsR, tyR, bodyR) ← elaborate_definition tyR bodyR,
     trace $ "def " ++ to_string (n.param 2) ++ " : " ++ to_string tyR ++ " :=",
     trace $ bodyR,
     add_decl $ mk_definition (n.param 2) (univs ++ univs1 ++ univsR) tyR bodyR,
@@ -341,12 +459,23 @@ meta def param_cmd (_ : parse $ tk "#param") : lean.parser unit := do
 -- Working examples --
 ----------------------
 
-universes u u' v v' l l' w uu
 #print empty.rec
+
 #param empty
+
 #print empty.param.«2»
 #print empty.param.«2».rec
+
+inductive nonempty.param : Π (α0 : Sort.{u}) (α1 : Sort.{u'}) (αR : α0 -> α1 -> Sort.{v})
+ (x0 : nonempty.{u} α0) (x1 : nonempty.{u'} α1), Prop
+| intro : Π (α0 : Sort.{u}) (α1 : Sort.{u'}) (αR : α0 -> α1 -> Sort.{v})
+ (val0 : α0) (val1 : α1) (valR : αR val0 val1),
+  (nonempty.param α0 α1 αR 
+(nonempty.intro.{u} val0) (nonempty.intro.{u'} val1))
+
 #param nonempty
+
+
 #param punit
 #param bool
 #param nat
@@ -363,6 +492,7 @@ inductive list.param (T0 : Type.{u}) (T1 : Type.{u'}) (TR : T0 -> T1 -> Type.{ma
 #param has_zero has_one has_neg has_add has_mul
 
 #param true false and or not.
+
 #param id
 
 #param nat.cases_on
