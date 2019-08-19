@@ -207,7 +207,9 @@ meta def expr.mk_bindings (k : name → binder_info → expr → expr → expr)
   level.succ (level.max (level.succ (level.mvar "u")) (level.succ (level.mvar "v")))
 
 inductive propind : Prop
-| zero (α : Sort u) : propind
+| dummy : propind
+| zero (α : Type u → propind) : propind
+
 #print propind
 -- #run_cmd do
 --   let n := `(nat.pred 10),
@@ -236,11 +238,11 @@ meta def expr.uparametrize : expr → expr
 meta def elaborate_definition (univs01 : list name) 
  (ty : expr) (term : expr) : tactic (list name × expr × expr) :=
 do
-  infer_type term >>= λ ty_term, unify ty_term ty transparency.all,
-  ity ← instantiate_mvars ty,
-  iterm ← instantiate_mvars term,
-  return (iterm.collect_univ_params.remove_all univs01,
-    ity.uparametrize, iterm.uparametrize)
+  tty ← infer_type term,
+  unify tty ty transparency.all,
+  pty ← expr.uparametrize <$> instantiate_mvars ty,
+  pterm ← expr.uparametrize <$> instantiate_mvars term,
+  return (pterm.collect_univ_params.remove_all univs01, pty, pterm)
 
 meta def expr.lconstify (fn cn : name) (ty : expr) : expr → expr
 | e@(const n ls) := if n = cn then local_const fn cn binder_info.default ty else e 
@@ -318,10 +320,10 @@ do
   let indlvl := level.succ (clvls.foldr level.max level.zero).normalize,
   trace $ "indlvl: " ++ to_string indlvl,
   trace $ "ty: " ++ to_string ty,
-  trace $ "pty0: " ++ to_string pty0,
+  trace $ "pty0: " ++ to_string pty0,/- 
   let ptyu := if ctors.length ≤ 1 then pty0 else
     ty.instantiate_univ_params [(p, indlvl)],
-  trace $ "ptyu: " ++ to_string ptyu,
+  trace $ "ptyu: " ++ to_string ptyu, -/
   let all_univs := plctors.foldr
     (λ e univs, list.union univs e.collect_univ_params) [],
   let univsR := all_univs.remove_all univs01,
@@ -329,7 +331,7 @@ do
     lctor.constify (x.local_uniq_name) (x.local_pp_name)
       ((univs01 ++ univsR).map (λ u, level.param u))
   ),
-  return (univsR, ptyu, ectors)
+  return (univsR, pty0, ectors)
 
 meta def param.recursor (p := 2) (n : name) : tactic unit := do
   env ← get_env,
@@ -352,8 +354,8 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   let umap := rb_map.of_list (univs.zip univs1),
   let lvls1 := univs1.map level.param,
   let rec : expr := const rec_name lvls,
-  let rec1 : expr := const rec_name lvls1,
-  let Rrec : expr := const Rrec_name (lvls ++ lvls1),
+  let rec1 : expr := const rec_name lvls1,/- 
+  let Rrec : expr := const Rrec_name (lvls ++ lvls1), -/
   trace ("rec:", rec),
   (rec_ty0, rec_ty1, rec_tyR) ← rec_ty.param mk_true p umap mk_name_map,
   let rec_tyRrr := rec_tyR.mk_subst_or_app [rec, rec1],
@@ -406,8 +408,12 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   /- infer_type recR >>= λ btyR, unify rec_tyRrr btyR transparency.all,
   recR_unif ← instantiate_mvars recR,
   trace ("recR_unif:", recR_unif), -/
-  (univsR, rec_tyRrr, recR) ← elaborate_definition (univs ++ univs1) rec_tyRrr rec_tyRrr.mk_sorry,
-  add_decl $ mk_definition ((n ++ "rec").param 2) (univs ++ univs1 ++ univsR) rec_tyRrr recR
+  rec_tyRrr ← instantiate_mvars rec_tyRrr,
+  let rec_tyRrr := rec_tyRrr.uparametrize,
+  trace ("uparametrized rec_tyRrr:", rec_tyRrr),
+  let univsR := rec_tyRrr.collect_univ_params.remove_all (univs ++ univs1),
+  add_decl $ mk_definition ((n ++ "rec").param 2)
+    (univs ++ univs1 ++ univsR) rec_tyRrr rec_tyRrr.mk_sorry
 
 meta def param.inductive (p := 2) (n : name) : tactic unit := do
   env ← get_env,
@@ -450,9 +456,9 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
   trace $ "inductive " ++ to_string (n.param p) ++ " : " ++ to_string tyRii,
   ctorsR.mmap' (λ ⟨n, ty⟩, trace $ "| " ++ to_string n ++ " : " ++ to_string ty),
   add_inductive (n.param p) (univs ++ univs1 ++ univsR) ((p + 1) * nparams) tyRii ctorsR,
-  trace ("=========== inductive added =============")
-/-   param.recursor p n
- -/
+  trace ("=========== inductive added ============="),
+  param.recursor p n
+
  
 meta def param.def (p := 2) (n : name) : tactic unit := do
   env ← get_env,
@@ -529,24 +535,24 @@ inductive punit.param : punit.{upunit0} -> punit.{upunit1} -> Prop
 
 set_option timeout 100000
 
+inductive param_sort : Type u → Type v → Prop
+| param_rel (R : Sort u → Sort v → Sort w) : param_sort (Sort u) (Sort v)
+
 #param nonempty
+#print list
+
+run_cmd do
+  u ← mk_meta_univ, v ← mk_meta_univ,
+  let t : expr := mk_app (const (`list.nil) [u]) [const `punit [v]],
+  trace $ infer_type t,
+  t ← instantiate_mvars t,
+  trace $ to_raw_fmt t 
+
 
 #param punit
 
 #param bool
 #param nat
-
-inductive list.param : Pi (T0 : Type.{u}) (T1 : Type.{v}) (TR : T0 -> T1 -> Sort.{w})
- (x0 : list.{u} T0) (x1 : list.{v} T1), Type
-| nil: Pi (T0 : Type.{u}) (T1 : Type.{v}) (TR : T0 -> T1 -> Sort.{w}),
- (list.param T0 T1 TR (list.nil.{u}) (list.nil.{v}))
-| cons : Pi (T0 : Type.{u}) (T1 : Type.{v}) (TR : T0 -> T1 -> Sort.{w})
- (hd0 : T0) (hd1 : T1) (hdR : TR hd0 hd1)
-  (tl0 : list.{u} T0) (tl1 : list.{v} T1) 
-  (tlR : list.param T0 T1 TR tl0 tl1), (list.param T0 T1 TR
-(list.cons.{u} hd0 tl0) (list.cons.{v} hd1 tl1))
-
-set_option profiler true
 #param list
 
 inductive list.param (T0 : Type.{u}) (T1 : Type.{u'}) (TR : T0 -> T1 -> Type.{max u u'}) :
@@ -560,11 +566,10 @@ inductive list.param (T0 : Type.{u}) (T1 : Type.{u'}) (TR : T0 -> T1 -> Type.{ma
 
 #param has_zero has_one has_neg has_add has_mul
 
-#param true false
-#param not
-#param and
+#param true false and
 #param or
 
+#param not
 #param id
 
 #param nat.cases_on
