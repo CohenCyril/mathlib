@@ -104,9 +104,6 @@ meta def level_of {elab : bool} : expr elab → list level
 | (elet n g e f) := level_of g ++ level_of e ++ level_of f 
 | (macro d args) := [] -/
 
-inductive sort.param.«2» (α : Sort u) (β : Sort v) : Prop
-| mk : (α → β → Prop) → sort.param.«2»
-
 meta def expr.param' (current : expr := mk_true) 
   (p : nat) (umap : name_map name) : expr →
   name_map (expr × expr × expr) →
@@ -115,7 +112,9 @@ meta def expr.param' (current : expr := mk_true)
 | (sort        lvl) _ := do
   let lvl1 := lvl.instantiate (umap.map $ level.param).to_list,
   lvlR ← mk_meta_univ,
-  return (sort lvl, sort lvl1, const `sort.param.«2» [lvl, lvl1])
+  return (sort lvl, sort lvl1,
+    lam "α0" bid (sort lvl) $ lam "α1" bid (sort lvl1) $
+    pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort lvlR)
 | c@(const       x lvls) _ := do
     let xR := x.param p,
     let lvls1 := lvls.map (λ lvl, lvl.instantiate (umap.map $ level.param).to_list),
@@ -534,26 +533,23 @@ inductive punit.param : punit.{upunit0} -> punit.{upunit1} -> Prop
 
 #print punit.param
 
-set_option timeout 100000
-
-inductive param_sort : Type u → Type v → Prop
-| param_rel (R : Sort u → Sort v → Sort w) : param_sort (Sort u) (Sort v)
-
 #param nonempty
 #print list
 
-
-
 run_cmd do
-  u ← mk_meta_univ, v ← mk_meta_univ,
-  let t : expr := mk_app (const (`list.nil) [u]) [const `punit [v]],
-  let pt : pexpr := ``(list.nil),
-  trace $ "pt = " ++ to_string (to_raw_fmt pt),
-  ept ← to_expr ``(list.nil),
-  trace $ "ept = " ++ to_string (to_raw_fmt ept),
-  unify t ept,
+  u ← level.param <$> mk_fresh_name,
+  v ← mk_meta_univ,
+  let t : expr := tactic.mk_app (const (`list.nil) [u]) [const `punit [v]],
+  tty ← infer_type t,
+  trace $ "tty = " ++ to_string tty,
+  ttyty ← infer_type tty,
+  m ← mk_meta_var tty,
+  unify t m,
+  trace $ "ttyty = " ++ to_string ttyty,
+  t ← to_expr (pexpr.of_expr t),
+  type_check t,
   t ← instantiate_mvars t,
-  trace $ "t = " ++ to_string (to_raw_fmt t)
+  trace $ "t = " ++ to_string (to_raw_fmt t) 
 
 
 #param punit
