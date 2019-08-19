@@ -533,20 +533,23 @@ inductive punit.param : punit.{upunit0} -> punit.{upunit1} -> Prop
 
 #print punit.param
 
-set_option timeout 100000
-
-inductive param_sort : Type u → Type v → Prop
-| param_rel (R : Sort u → Sort v → Sort w) : param_sort (Sort u) (Sort v)
-
 #param nonempty
 #print list
 
 run_cmd do
-  u ← mk_meta_univ, v ← mk_meta_univ,
-  let t : expr := mk_app (const (`list.nil) [u]) [const `punit [v]],
-  trace $ infer_type t,
+  u ← level.param <$> mk_fresh_name,
+  v ← mk_meta_univ,
+  let t : expr := tactic.mk_app (const (`list.nil) [u]) [const `punit [v]],
+  tty ← infer_type t,
+  trace $ "tty = " ++ to_string tty,
+  ttyty ← infer_type tty,
+  m ← mk_meta_var tty,
+  unify t m,
+  trace $ "ttyty = " ++ to_string ttyty,
+  t ← to_expr (pexpr.of_expr t),
+  type_check t,
   t ← instantiate_mvars t,
-  trace $ to_raw_fmt t 
+  trace $ "t = " ++ to_string (to_raw_fmt t) 
 
 
 #param punit
