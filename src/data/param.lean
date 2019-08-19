@@ -233,17 +233,14 @@ meta def expr.uparametrize : expr → expr
 | e@(var n) := e
 | e@(macro d args) := e
 
-meta def elaborate_definition
+meta def elaborate_definition (univs01 : list name) 
  (ty : expr) (term : expr) : tactic (list name × expr × expr) :=
 do
   infer_type term >>= λ ty_term, unify ty_term ty transparency.all,
   ity ← instantiate_mvars ty,
   iterm ← instantiate_mvars term,
-  let ((pty, pterm), us) := (do
-      pty ← ity.uparametrize,
-      pterm ← iterm.uparametrize,
-      pure (pty, pterm)).run in
-  return (, pterm)
+  return (iterm.collect_univ_params.remove_all univs01,
+    ity.uparametrize, iterm.uparametrize)
 
 meta def expr.lconstify (fn cn : name) (ty : expr) : expr → expr
 | e@(const n ls) := if n = cn then local_const fn cn binder_info.default ty else e 
@@ -310,22 +307,29 @@ do
   let pty0 := ty.instantiate_univ_params [(p, level.zero)],
   elctors ← ctors.mmap (elab_wrt x),
   trace $ "elaborate_inductive: begin uparam",
-  let (plctors, univs) := (elctors.mmap expr.uparametrize).run,
+  let plctors := elctors.map (λ elctor,
+    elctor.uparametrize.instantiate_univ_params [(p, level.zero)]),
   trace $ "elaborate_inductive: univ normalizing",
-  clvls ← plctors.mmap (λ plctor, level.normalize <$> slevel <$>
-   infer_type (plctor.instantiate_univ_params [(p, level.zero)])),
+  ctypes ← plctors.mmap infer_type,
+  trace $ "ctypes : " ++ to_string ctypes,
+  clvls ← plctors.mmap (λ plctor, level.normalize <$> slevel <$> infer_type plctor),
+  trace $ "clvls : " ++ to_string clvls,
   trace $ "elaborate_inductive: computing indlvl",
   let indlvl := level.succ (clvls.foldr level.max level.zero).normalize,
+  trace $ "indlvl: " ++ to_string indlvl,
   trace $ "ty: " ++ to_string ty,
   trace $ "pty0: " ++ to_string pty0,
   let ptyu := if ctors.length ≤ 1 then pty0 else
     ty.instantiate_univ_params [(p, indlvl)],
   trace $ "ptyu: " ++ to_string ptyu,
+  let all_univs := plctors.foldr
+    (λ e univs, list.union univs e.collect_univ_params) [],
+  let univsR := all_univs.remove_all univs01,
   let ectors := plctors.map (λ lctor,
     lctor.constify (x.local_uniq_name) (x.local_pp_name)
-      ((univs01 ++ univs).map (λ u, level.param u))
+      ((univs01 ++ univsR).map (λ u, level.param u))
   ),
-  return (univs, ptyu, ectors)
+  return (univsR, ptyu, ectors)
 
 meta def param.recursor (p := 2) (n : name) : tactic unit := do
   env ← get_env,
@@ -402,7 +406,7 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   /- infer_type recR >>= λ btyR, unify rec_tyRrr btyR transparency.all,
   recR_unif ← instantiate_mvars recR,
   trace ("recR_unif:", recR_unif), -/
-  (univsR, rec_tyRrr, recR) ← elaborate_definition rec_tyRrr rec_tyRrr.mk_sorry,
+  (univsR, rec_tyRrr, recR) ← elaborate_definition (univs ++ univs1) rec_tyRrr rec_tyRrr.mk_sorry,
   add_decl $ mk_definition ((n ++ "rec").param 2) (univs ++ univs1 ++ univsR) rec_tyRrr recR
 
 meta def param.inductive (p := 2) (n : name) : tactic unit := do
@@ -422,10 +426,9 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
   (ty0, ty1, tyR) ← ty.param mk_true p umap mk_name_map,
   trace $ ("tyR", to_string tyR),
   let tyRii := tyR.mk_subst_or_app [const n lvls, const n lvls1],
-  let (tyRii, tyRii_univs) := tyRii.uparametrize.run,
+  let tyRii := tyRii.uparametrize,
   let uty := lparam $ slevel $ concl tyRii,
   trace $ "return type universe: " ++ to_string uty,
-  let tyRii_univs := tyRii_univs.remove_all [uty],
   cn ← mk_local_def nR tyRii,
   trace $ ("tyRii", to_string tyRii),
   trace ("lvls", lvls),
@@ -439,14 +442,14 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
     return (n.param p, tyRcc)),
   let (cnamesR, ctysR) := ctorsR.unzip,
   trace ("=========== elaborating inductive ============="),
-  (univsR, tyRii, ctysR) ← elaborate_inductive cn (univs ++ univs1 ++ tyRii_univs) uty tyRii ctysR,
+  (univsR, tyRii, ctysR) ← elaborate_inductive cn (univs ++ univs1) uty tyRii ctysR,
   let ctorsR := list.zip cnamesR ctysR,
   trace $ ("ctorsR:", to_string ctorsR),
   trace ("=========== adding inductive ============="),
-  trace $ "universes " ++ (univs ++ univs1 ++ tyRii_univs ++ univsR).foldr (λ u s, to_string u ++ " " ++ s) "",
+  trace $ "universes " ++ (univs ++ univs1 ++ univsR).foldr (λ u s, to_string u ++ " " ++ s) "",
   trace $ "inductive " ++ to_string (n.param p) ++ " : " ++ to_string tyRii,
   ctorsR.mmap' (λ ⟨n, ty⟩, trace $ "| " ++ to_string n ++ " : " ++ to_string ty),
-  add_inductive (n.param p) (univs ++ univs1 ++ tyRii_univs ++ univsR) ((p + 1) * nparams) tyRii ctorsR,
+  add_inductive (n.param p) (univs ++ univs1 ++ univsR) ((p + 1) * nparams) tyRii ctorsR,
   trace ("=========== inductive added =============")
 /-   param.recursor p n
  -/
@@ -475,7 +478,7 @@ meta def param.def (p := 2) (n : name) : tactic unit := do
     tyR_unif ← instantiate_mvars tyR,
     trace ("def tyR_unif:", tyR_unif), -/
     /- trace ("def tyR_unif:", tyR_unif.to_raw_fmt), -/
-    (univsR, tyR, bodyR) ← elaborate_definition tyR bodyR,
+    (univsR, tyR, bodyR) ← elaborate_definition (univs ++ univs1) tyR bodyR,
     trace $ "def " ++ to_string (n.param 2) ++ " : " ++ to_string tyR ++ " :=",
     trace $ bodyR,
     add_decl $ mk_definition (n.param 2) (univs ++ univs1 ++ univsR) tyR bodyR,
@@ -533,6 +536,16 @@ set_option timeout 100000
 #param bool
 #param nat
 
+inductive list.param : Pi (T0 : Type.{u}) (T1 : Type.{v}) (TR : T0 -> T1 -> Sort.{w})
+ (x0 : list.{u} T0) (x1 : list.{v} T1), Type
+| nil: Pi (T0 : Type.{u}) (T1 : Type.{v}) (TR : T0 -> T1 -> Sort.{w}),
+ (list.param T0 T1 TR (list.nil.{u}) (list.nil.{v}))
+| cons : Pi (T0 : Type.{u}) (T1 : Type.{v}) (TR : T0 -> T1 -> Sort.{w})
+ (hd0 : T0) (hd1 : T1) (hdR : TR hd0 hd1)
+  (tl0 : list.{u} T0) (tl1 : list.{v} T1) 
+  (tlR : list.param T0 T1 TR tl0 tl1), (list.param T0 T1 TR
+(list.cons.{u} hd0 tl0) (list.cons.{v} hd1 tl1))
+
 set_option profiler true
 #param list
 
@@ -547,7 +560,10 @@ inductive list.param (T0 : Type.{u}) (T1 : Type.{u'}) (TR : T0 -> T1 -> Type.{ma
 
 #param has_zero has_one has_neg has_add has_mul
 
-#param true false and or not.
+#param true false
+#param not
+#param and
+#param or
 
 #param id
 
