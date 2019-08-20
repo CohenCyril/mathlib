@@ -36,13 +36,13 @@ meta def expr.strip_lam : expr → nat → option expr
 | t 0 := return t
 | _ _ := none
 
--- 
+--
 meta def concl : expr → expr | (pi _ _ _ ty) := concl ty | ty := ty
 meta def hdapp : expr → expr | (app x _)     := hdapp x  | x := x
 
 meta def split_pis : option ℕ → expr → list expr × expr
 | (some 0) ty := ([], ty)
-| n (pi _ _ α ty) := 
+| n (pi _ _ α ty) :=
   let (αs, ty) := split_pis ((λ x : ℕ, x - 1) <$> n) ty in
   (α :: αs, ty)
 | _ ty := ([], ty)
@@ -103,7 +103,7 @@ meta def environment.inductive_type_of_rec (env : environment) (n : name) : opti
   | _ := none
   end
 
-meta def expr.param' (current : expr := mk_true) 
+meta def expr.param' (current : expr := mk_true)
   (p : nat) (umap : name_map name) : expr →
   name_map (expr × expr × expr) →
   tactic (expr × expr × expr)
@@ -121,7 +121,7 @@ meta def expr.param' (current : expr := mk_true)
     let lvls1 := lvls.map (λ lvl, lvl.instantiate (umap.map $ level.param).to_list),
     if xR = current.local_pp_name then return (c, const x lvls1, current) else do
     env ← get_env,
-    if ¬ env.contains xR 
+    if ¬ env.contains xR
     then fail $ "expr.param': const " ++ to_string xR ++ "unknown"
     else do
     xR_decl ← env.get xR,
@@ -204,7 +204,7 @@ meta def param.fresh_from_pis (p := 2) (umap  : _):
 
 meta def param.entangle : (list expr × list expr × list expr) → list expr
 | (x :: xs, y :: ys, z :: zs) := x :: y :: z :: param.entangle (xs, ys, zs)
-| _ := [] 
+| _ := []
 
 meta def expr.mk_bindings (k : name → binder_info → expr → expr → expr)
   (vars : list expr) (e : expr) : expr := vars.foldr (mk_binding k) e
@@ -217,7 +217,7 @@ meta def expr.mk_bindings (k : name → binder_info → expr → expr → expr)
 
 -- #set_option profiler true
 
- -- #eval nat.pred 10000 
+ -- #eval nat.pred 10000
 #eval to_string $ level.normalize $
   level.succ (level.max (level.succ (level.mvar "u")) (level.succ (level.mvar "v")))
 
@@ -250,32 +250,40 @@ meta def expr.uparametrize : expr → expr
 | e@(var n) := e
 | e@(macro d args) := e
 
+
+meta def dsimp_unify (e1 e2 : expr) : tactic unit := do
+    let s := simp_lemmas.mk,
+    e1 ← s.dsimplify [] e1 <|> return e1,
+    e2 ← s.dsimplify [] e2 <|> return e2,
+    trace $ "dsimp_unify " ++ to_string e1
+               ++ " with " ++ to_string e2,
+    unify e1 e2 transparency.all
+
 meta def expr.elab (e : expr) : tactic expr := do
   trace $ "e = " ++ to_string (to_raw_fmt e), trace "",
   p ← e.skeleton,
   trace $ "p = " ++ to_string (to_raw_fmt p), trace "",
   e' ← to_expr p,
   trace $ "e' = " ++ to_string (to_raw_fmt e'),  trace "",
-  unify e' e transparency.all,
+  dsimp_unify e' e,
   e ← instantiate_mvars e,
   trace $ "unified e = " ++ to_string (to_raw_fmt e), trace "",
   return e
-  
-meta def elaborate_definition (univs01 : list name) 
+
+meta def elaborate_definition (univs01 : list name)
  (ty : expr) (term : expr) : tactic (list name × expr × expr) :=
 do
   ty ← ty.elab,
   term ← term.elab,
   tty ← infer_type term,
-  trace $ "elab def, unify " ++ to_string tty ++ " with " ++ to_string ty,
-  unify tty ty transparency.all,
+  dsimp_unify tty ty,
   pty ← expr.uparametrize <$> instantiate_mvars ty,
   pterm ← expr.uparametrize <$> instantiate_mvars term,
   let all_univs := pty.collect_univ_params.union pterm.collect_univ_params,
   return (all_univs.remove_all univs01, pty, pterm)
 
 meta def expr.lconstify (fn cn : name) (ty : expr) : expr → expr
-| e@(const n ls) := if n = cn then local_const fn cn binder_info.default ty else e 
+| e@(const n ls) := if n = cn then local_const fn cn binder_info.default ty else e
 | (mvar n m t) := mvar n m t.lconstify
 | (local_const n m bi t) := local_const n m bi t.lconstify
 | (app e f) := mk_app e.lconstify [f.lconstify]
@@ -287,7 +295,7 @@ meta def expr.lconstify (fn cn : name) (ty : expr) : expr → expr
 meta def expr.constify (fn cn : name) (lvls : list level) (e : expr) : expr :=
   instantiate_local fn (const cn lvls) e
 
-/- 
+/-
   let lam_xs := const (`punit ++ `star) [level.zero]).mk_bindings lam xs
   infer_type ()
   >>= unify ((const `punit [level.zero]).mk_bindings pi ts),
@@ -311,7 +319,7 @@ meta def elab_ctor (x : expr) (e : expr) : tactic expr := do
    e ← instantiate_mvars e,
   trace $ "elab_ctor output = " ++ to_string e,
    return e
-  
+
 meta def elaborate_inductive (x : expr) (univs01 : list name) (p : name)
  (ty : expr) (ctors : list expr) : tactic (list name × expr × list expr) :=
 do
@@ -330,7 +338,7 @@ do
   let indlvl := level.succ (clvls.foldr level.max level.zero).normalize,
   trace $ "indlvl = " ++ to_string indlvl,
   trace $ "ty = " ++ to_string ty,
-  trace $ "pty0 = " ++ to_string pty0,/- 
+  trace $ "pty0 = " ++ to_string pty0,/-
   let ptyu := if ctors.length ≤ 1 then pty0 else
     ty.instantiate_univ_params [(p, indlvl)],
   trace $ "ptyu = " ++ to_string ptyu, -/
@@ -364,16 +372,16 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   let umap := rb_map.of_list (univs.zip univs1),
   let lvls1 := univs1.map level.param,
   let rec : expr := const rec_name lvls,
-  let rec1 : expr := const rec_name lvls1,/- 
+  let rec1 : expr := const rec_name lvls1,/-
   let Rrec : expr := const Rrec_name (lvls ++ lvls1), -/
   trace ("rec:", rec),
   (rec_ty0, rec_ty1, rec_tyR) ← rec_ty.param mk_true p umap mk_name_map,
   let rec_tyRrr := rec_tyR.mk_subst_or_app [rec, rec1],
-  trace ("rec_tyRrr:", rec_tyRrr),/- 
-  (params@(params0, params1, paramsR), lconsts, rec_ty_no_params) ← 
+  trace ("rec_tyRrr:", rec_tyRrr),/-
+  (params@(params0, params1, paramsR), lconsts, rec_ty_no_params) ←
     param.fresh_from_pis p umap mk_name_map (some nparams) rec_ty,
   trace ("params:", params),
-  (pred@([pred0], [pred1], [predR]), lconsts, rec_ty_ctors) ← 
+  (pred@([pred0], [pred1], [predR]), lconsts, rec_ty_ctors) ←
     param.fresh_from_pis p umap lconsts (some 1) rec_ty_no_params,
   trace ("pred:", pred),
   (cases@(cases0, cases1, casesR), lconsts, rec_ty_indices) ←
@@ -470,9 +478,12 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
   trace ("=========== inductive added ============="),
   param.recursor p n
 
- 
+
 meta def param.axiom (p := 2) (n : name) : tactic unit := do
   env ← get_env,
+  if env.contains (n.param p)
+    then return ()
+  else do
   decl ← env.get n,
   let univs := decl.univ_params,
   let α := decl.type,
@@ -527,9 +538,44 @@ meta def param.def (p := 2) (n : name) : tactic unit := do
 
 meta def param.decl (p := 2) (n : name) : tactic unit := do
   env ← get_env,
+  if env.contains (n.param p)
+    then return ()
+  else if ¬ env.contains n
+     then fail $ "param.decl: " ++ to_string n ++ " not in env"
+  else do
   if env.is_inductive n then param.inductive p n
   else if env.is_definition n then param.def p n
   else fail $ "translate: cannot translate " ++ to_string n
+
+meta def expr.collect_const : expr → list name
+| (const a a_1) := [a]
+| (mvar a a_1 a_2) := a_2.collect_const
+| (local_const a a_1 a_2 a_3) := a_3.collect_const
+| (app a a_1) := a.collect_const.union a_1.collect_const
+| (lam a a_1 a_2 a_3) := a_2.collect_const.union a_3.collect_const
+| (pi a a_1 a_2 a_3) := a_2.collect_const.union a_3.collect_const
+| (elet a a_1 a_2 a_3) :=
+    a_1.collect_const.union $ a_2.collect_const.union a_3.collect_const
+| (macro a a_1) := (a_1.map expr.collect_const).join
+| e@(var a) := []
+| e@(sort a) := []
+
+meta def declaration.collect_const : declaration → list name
+| (declaration.defn n ls t v h tr) := t.collect_const.union v.collect_const
+| (declaration.thm n ls t v)       := t.collect_const.union v.collect_const
+| (declaration.cnst n ls t tr)     := t.collect_const
+| (declaration.ax n ls t)          := t.collect_const
+
+meta def param.decl_rec (p := 2) (ax := ff) : name → tactic unit := λ n, do
+  env ← get_env,
+  if ¬ env.contains n
+     then fail $ "param.decl: " ++ to_string n ++ " not in env"
+  else do
+  d ← env.get n,
+  let deps := d.collect_const,
+  deps.mmap param.decl_rec,
+  param.decl p n <|> if ax then param.axiom p n
+    else fail $ "cannot translate " ++ to_string n
 
 @[user_command]
 meta def param_cmd (_ : parse $ tk "#param") : lean.parser unit := do
@@ -541,83 +587,34 @@ meta def param_axiom_cmd (_ : parse $ tk "#param_axiom") : lean.parser unit := d
   ns ← many ident,
   of_tactic $ ns.mmap' (param.axiom 2)
 
+@[user_command]
+meta def param_rec_cmd (_ : parse $ tk "#param_rec") : lean.parser unit := do
+  ns ← many ident,
+  of_tactic $ ns.mmap' (param.decl_rec 2)
+
+@[user_command]
+meta def param_rec_ax_cmd (_ : parse $ tk "#param_rec_ax") : lean.parser unit := do
+  ns ← many ident,
+  of_tactic $ ns.mmap' (param.decl_rec 2 tt)
 ----------------------
 -- Working examples --
 ----------------------
 
 #print empty.rec
+#print band bnot
 
-#param empty
-
-#print empty.param.«2»
-#print empty.param.«2».rec
-
-inductive nonempty.param : Π (α0 : Sort.{u}) (α1 : Sort.{u'}) (αR : α0 -> α1 -> Sort.{v})
- (x0 : nonempty.{u} α0) (x1 : nonempty.{u'} α1), Prop
-| intro : Π (α0 : Sort.{u}) (α1 : Sort.{u'}) (αR : α0 -> α1 -> Sort.{v})
- (val0 : α0) (val1 : α1) (valR : αR val0 val1),
-  (nonempty.param α0 α1 αR 
-(nonempty.intro.{u} val0) (nonempty.intro.{u'} val1))
-
-universes unat 
-inductive nat.param : nat -> nat -> Sort.{(max (imax 1 1 unat) unat)+1}
-| zero : nat.param nat.zero nat.zero
-| succ : Pi (n0 : nat) (n1 : nat) (nR : nat.param n0 n1),
-  (nat.param (nat.succ n0) (nat.succ n1))
-
-universes upunit0 upunit1 
-inductive punit.param : punit.{upunit0} -> punit.{upunit1} -> Prop
-| star : punit.param punit.star.{upunit0} punit.star.{upunit1}
-
-#print punit.param
-
-#param nonempty
-#print list
-
-#param punit
-
-#param bool
-#param nat
-#param list
-
-inductive list.param (T0 : Type.{u}) (T1 : Type.{u'}) (TR : T0 -> T1 -> Type.{max u u'}) :
-  Π (x0 : list.{u} T0) (x1 : list.{u'} T1), Type.{max u u'}
-| nil : list.param (list.nil.{u}) (list.nil.{u'})
-| cons : Π (hd0 : T0) (hd1 : T1) (hdR : TR hd0 hd1)
-           (tl0 : list.{u} T0) (tl1 : list.{u'} T1) (tlR : list.param tl0 tl1), 
-  (list.param (list.cons.{u} hd0 tl0) (list.cons.{u'} hd1 tl1))
-
-#param pprod
-
-#param has_zero has_one has_neg has_add has_mul
-#param has_zero.zero
+#param_rec_ax empty nonempty punit bool list nat or and not
+#param_rec_ax pprod.fst pprod.snd
+#param_rec_ax has_zero has_one has_neg has_add has_mul
+#param_rec_ax id nat.add nat.mul list.append
+#param_rec_ax bor band bnot bxor
+#param_rec_ax eq.cases_on eq.drec
 
 
-#param true false and
-#param or
-
-#param not
-#param id
-
-#param nat.cases_on
-#print nat.below
-#print nat.rec
-#print nat.succ.param.«2»
-#print nat.rec.param.«2»
-#print punit.star.param.«2»
-
-#print pprod.fst
-#param pprod.fst
-
-#param_axiom pprod.snd
-
-#param_axiom nat.below
-
-#print nat.brec_on
-#print nat.below.param.«2»
+#print nat.param.«2»
 
 def nat.below.param : Π (C0 : nat -> Sort.{l}) (C1 : nat -> Sort.{l'}) (CR : Pi (n0 : nat)
- (n1 : nat) (nR : nat.param.«2» n0 n1) (x0 : C0 n0) (x1 : C1 n1), Prop) 
+ (n1 : nat) (nR : nat.param.«2» n0 n1) (x0 : C0 n0) (x1 : C1 n1), Prop)
  (n0 : nat) (n1 : nat) (nR : nat.param.«2» n0 n1)
   (x0 : nat.below.{l} C0 n0) (x1 : nat.below.{l'} C1 n1), Prop :=
 λ (C0 : ℕ → Sort l) (C1 : ℕ → Sort l')
@@ -651,9 +648,6 @@ def nat.below.param : Π (C0 : nat -> Sort.{l}) (C1 : nat -> Sort.{l'}) (CR : Pi
 
 #print test
 
-#param_axiom nat.brec_on
-#print nat.add._main
-#param_axiom nat.add._main
 
 #param_axiom nat.add
 set_option formatter.hide_full_terms false
@@ -669,6 +663,52 @@ def empty.rec.type := Π (C : empty → Sort l) (n : empty), C n
 #param eq.drec
 #param eq.cases_on
 
+#print classical.choice
+
+#param_axiom classical.choice
+example : false :=
+let R := nonempty.param.«2» bool bool (≠) in
+classical.choice.param.«2» bool bool (≠) ⟨ff⟩ ⟨tt⟩
+  (⟨_, _, _, ff, tt, bool.ff_ne_tt⟩ : R ⟨ff⟩ ⟨tt⟩) rfl
+
+def n_id : ℕ → ℕ
+| nat.zero := nat.zero
+| (nat.succ k) := nat.succ k
+
+set_option pp.all true
+
+#param_rec_ax n_id
+
+def P : (ℕ → ℕ) → Prop := λ f, f nat.zero = nat.zero
+
+run_cmd do
+  let trace_unify (e1 e2 : expr) : tactic unit := (do
+    let s := simp_lemmas.mk,
+    e1 ← s.dsimplify [] e1 <|> return e1, e2 ← s.dsimplify [] e2 <|> return e2,
+    trace $ "try to unify " ++ to_string e1 ++ " with " ++ to_string e2,
+    unify e1 e2 transparency.all,
+    trace $ "unify successful between " ++ to_string e1 ++ " with " ++ to_string e2),
+  t1 ← to_expr ``(λ (a0 : nat), n_id._main a0 = nat.zero),
+  t2 ← to_expr ``(λ (a0 : nat), n_id a0 = nat.zero),
+  trace_unify t1 t2
+
+#exit
+t1 ← to_expr ``(Π (a0 : nat) (a1 : nat) (aR : nat.param.«2» a0 a1),
+    nat.param.«2» (n_id._main a0) (n_id._main a1)),
+  t2 ← to_expr ``(Π (a0 : nat) (a1 : nat) (aR : nat.param.«2» a0 a1),
+    nat.param.«2» (n_id a0) (n_id a1)),
+  trace_unify t1 t2
+
+
+def n_id2 := n_id._main
+#print n_id -- n_id._main
+#print n_id2 -- n_id._main
+
+example : n_id = n_id2 := rfl -- succeeds
+
+run_cmd tactic.add_decl $ declaration.thm `nat.n_id_eq_eta_n_id []
+  `(n_id = λ n, n_id n) (pure `(@rfl _ n_id))
+#print nat.n_id_eq_eta_n_id
 
 /- run_cmd (do
   l ← mk_fresh_name,
@@ -681,7 +721,7 @@ def empty.rec.type := Π (C : empty → Sort l) (n : empty), C n
   let inds := [((`myeq, ty),
     [{environment.intro_rule . constr := `refl, type := ctorty}])],
   updateex_env $ λe, e.add_ginductive options.mk [l] params inds ff) -/
-/- 
+/-
 run_cmd (do
   l ← mk_fresh_name, let u := level.param l,
   let ty : expr := pi "α" binder_info.implicit (sort u)
@@ -699,7 +739,7 @@ run_cmd (do
 
 
 
-#print nat.param.«2»
+
 #check list
 #print list.rec
 #print eq.rec
@@ -723,7 +763,7 @@ def vec.rec.type := Π {α : Sort u} {C : Π (a : ℕ), vec.{u} α a → Sort l}
   (Π {n : ℕ} (vhd : α) (vtl : vec.{u} α n), C n vtl → C (nat.succ n) (vec.vcons.{u} vhd vtl)) →
   Π {a : ℕ} (n : vec.{u} α a), C a n
 #param vec.rec.type
-#print vec.rec.type.param.«2» 
+#print vec.rec.type.param.«2»
 
 #check vec.param.«2».rec
 
@@ -752,8 +792,8 @@ run_cmd do
   let c1 : expr tt := const `nat.pred [],
   let c2 : expr tt := const `nat.pred._main [],
   trace_unify c1 c2, -- success
-  trace "", 
-  let eta_nat t := lam `n bid (const `nat []) $ mk_app t [var 0], 
+  trace "",
+  let eta_nat t := lam `n bid (const `nat []) $ mk_app t [var 0],
   trace_unify (eta_nat c1) (eta_nat c2) -- failure!
 
 
