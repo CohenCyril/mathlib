@@ -56,6 +56,17 @@ inductive test : Type (max (v+1) v u)
 meta def slevel : expr → level | (sort lvl) := lvl | _ := level.zero
 meta def lparam : level → name | (level.param n) := n | _ := ""
 
+meta def expr.skeleton : expr → tactic pexpr
+| (var a) := return $ var a
+| (sort a) := sort <$> mk_meta_univ
+| (const a a_1) := return $ const a []
+| (mvar a a_1 a_2) := mvar a a_1 <$> a_2.skeleton
+| (local_const a a_1 a_2 a_3) := local_const a a_1 a_2 <$> a_3.skeleton
+| (app a a_1) := app <$> (pexpr.mk_explicit <$> a.skeleton) <*> a_1.skeleton
+| (lam a a_1 a_2 a_3) := lam a a_1 <$> a_2.skeleton <*> a_3.skeleton
+| (pi a a_1 a_2 a_3) := pi a a_1 <$> a_2.skeleton <*> a_3.skeleton
+| (elet a a_1 a_2 a_3) := elet a <$> a_1.skeleton <*> a_2.skeleton <*> a_3.skeleton
+| (macro a a_1) := macro a <$> a_1.mmap expr.skeleton
 
 meta def name.ext (ext : string) (x : name) : name :=
   (x.to_string ++ ext : string)
@@ -91,45 +102,45 @@ meta def environment.inductive_type_of_rec (env : environment) (n : name) : opti
   | (exceptional.success decl) := env.trailing_pi_type_of decl.type
   | _ := none
   end
-/- 
-meta def level_of {elab : bool} : expr elab → list level
-| (var n) := []
-| (sort l) := [l]
-| (const n ls) := ls
-| (mvar n m t)   := level_of t
-| (local_const n m bi t) := level_of t
-| (app e f) := level_of e ++ level_of f
-| (lam n bi e t) := level_of e ++ level_of t
-| (pi n bi e t) := level_of e ++ level_of t
-| (elet n g e f) := level_of g ++ level_of e ++ level_of f 
-| (macro d args) := [] -/
 
 meta def expr.param' (current : expr := mk_true) 
   (p : nat) (umap : name_map name) : expr →
   name_map (expr × expr × expr) →
   tactic (expr × expr × expr)
 | (var         db) _ := fail $ "expr.param: cannot translate a var"
-| (sort        lvl) _ := do
+| exp@(sort        lvl) _ := do
+  trace $ "expr.param' " ++ to_string exp,
   let lvl1 := lvl.instantiate (umap.map $ level.param).to_list,
   lvlR ← mk_meta_univ,
   return (sort lvl, sort lvl1,
     lam "α0" bid (sort lvl) $ lam "α1" bid (sort lvl1) $
     pi "x0" bid (var 1) $ pi "x1" bid (var 1) $ sort lvlR)
 | c@(const       x lvls) _ := do
+    trace $ "expr.param' " ++ to_string c,
     let xR := x.param p,
     let lvls1 := lvls.map (λ lvl, lvl.instantiate (umap.map $ level.param).to_list),
     if xR = current.local_pp_name then return (c, const x lvls1, current) else do
     env ← get_env,
+    if ¬ env.contains xR 
+    then fail $ "expr.param': const " ++ to_string xR ++ "unknown"
+    else do
     xR_decl ← env.get xR,
     /- do env ← get_env, env.get xR, /- fix: test only non current definitions -/ -/
     lvlsR ← mk_num_meta_univs $ (xR_decl.univ_params.length - 2 * lvls.length),
     return (c, const x lvls1, const xR (lvls ++ lvls1 ++ lvlsR))
-| c@(local_const x pry binfo α) lconsts := lconsts.find x
-| (app u v) lconsts := do
+| c@(local_const x pry binfo α) lconsts := do
+    trace $ "expr.param' " ++ to_string c,
+    match lconsts.find x with
+   | some c01R := return c01R
+   | none := fail ("expr.param': local_const " ++ to_string x ++ " not found")
+   end
+| exp@(app u v) lconsts := do
+    trace $ "expr.param' " ++ to_string exp,
   (u0, u1, uR) ← u.param' lconsts,
-  (v0, v1, vR) ← v.param' lconsts, /- trace $ "u= " ++ to_string u ++ ";   uR= " ++ to_string uR, -/
+  (v0, v1, vR) ← v.param' lconsts, /- trace $ "u = " ++ to_string u ++ ";   uR = " ++ to_string uR, -/
   return (mk_app u0 [v0], mk_app u1 [v1], mk_app uR [v0, v1, vR])
-| (lam x binfo α body) lconsts := do
+| exp@(lam x binfo α body) lconsts := do
+  trace $ "expr.param' " ++ to_string exp,
   (α0, α1, αR) ← α.param' lconsts,
   ((x0, x1, xR), lconsts, body) ← param.intro lconsts x α0 α1 αR body,
   (body0, body1, bodyR) ← body.param' lconsts,
@@ -137,7 +148,8 @@ meta def expr.param' (current : expr := mk_true)
   let t1 := body1.mk_binding lam x1,
   let tR := ((bodyR.mk_binding lam xR).mk_binding lam x1).mk_binding lam x0,
   return (t0, t1, tR)
-| (pi x binfo α body) lconsts := do
+| exp@(pi x binfo α body) lconsts := do
+  trace $ "expr.param' " ++ to_string exp,
   (α0, α1, αR) ← α.param' lconsts,
   ((x0, x1, xR), lconsts, body) ← param.intro lconsts x α0 α1 αR body,
   (body0, body1, bodyR) ← body.param' lconsts,
@@ -149,7 +161,8 @@ meta def expr.param' (current : expr := mk_true)
      ).mk_binding pi xR).mk_binding pi x1).mk_binding pi x0
      ).mk_binding lam f1).mk_binding lam f0,
   return (t0, t1, tR)
-| (elet  x α val body) lconsts :=  do
+| exp@(elet  x α val body) lconsts := do
+  trace $ "expr.param' " ++ to_string exp,
   (α0, α1, αR) ← α.param' lconsts,
   (val0, val1, valR) ← val.param' lconsts,
   ((x0, x1, xR), lconstss, body) ← param.intro lconsts x α0 α1 αR body,
@@ -161,7 +174,9 @@ meta def expr.param' (current : expr := mk_true)
   let t1 := body1.mk_binding let1 x1,
   let tR := ((bodyR.mk_binding letR xR).mk_binding let1 x1).mk_binding let0 x0,
   return (t0, t1, tR)
-| exp lconsts := match exp.is_sorry with
+| exp lconsts := do
+  trace $ "expr.param' " ++ to_string exp,
+  match exp.is_sorry with
   | some α := do
     (α0, α1, αR) ← α.param' lconsts,
     return (mk_sorry α0, mk_sorry α1, (mk_sorry αR).mk_subst_or_app [mk_sorry α0, mk_sorry α1])
@@ -235,14 +250,29 @@ meta def expr.uparametrize : expr → expr
 | e@(var n) := e
 | e@(macro d args) := e
 
+meta def expr.elab (e : expr) : tactic expr := do
+  trace $ "e = " ++ to_string (to_raw_fmt e), trace "",
+  p ← e.skeleton,
+  trace $ "p = " ++ to_string (to_raw_fmt p), trace "",
+  e' ← to_expr p,
+  trace $ "e' = " ++ to_string (to_raw_fmt e'),  trace "",
+  unify e' e transparency.all,
+  e ← instantiate_mvars e,
+  trace $ "unified e = " ++ to_string (to_raw_fmt e), trace "",
+  return e
+  
 meta def elaborate_definition (univs01 : list name) 
  (ty : expr) (term : expr) : tactic (list name × expr × expr) :=
 do
+  ty ← ty.elab,
+  term ← term.elab,
   tty ← infer_type term,
+  trace $ "elab def, unify " ++ to_string tty ++ " with " ++ to_string ty,
   unify tty ty transparency.all,
   pty ← expr.uparametrize <$> instantiate_mvars ty,
   pterm ← expr.uparametrize <$> instantiate_mvars term,
-  return (pterm.collect_univ_params.remove_all univs01, pty, pterm)
+  let all_univs := pty.collect_univ_params.union pterm.collect_univ_params,
+  return (all_univs.remove_all univs01, pty, pterm)
 
 meta def expr.lconstify (fn cn : name) (ty : expr) : expr → expr
 | e@(const n ls) := if n = cn then local_const fn cn binder_info.default ty else e 
@@ -257,6 +287,14 @@ meta def expr.lconstify (fn cn : name) (ty : expr) : expr → expr
 meta def expr.constify (fn cn : name) (lvls : list level) (e : expr) : expr :=
   instantiate_local fn (const cn lvls) e
 
+/- 
+  let lam_xs := const (`punit ++ `star) [level.zero]).mk_bindings lam xs
+  infer_type ()
+  >>= unify ((const `punit [level.zero]).mk_bindings pi ts),
+  trace $ "typeckecking: " ++ to_string iargs ++ " wrt " ++ to_string iparams, -/
+
+
+
 meta def tele_check : list expr → list expr → tactic unit
 | (e :: es) (x :: ts) := do
   trace $ "tele_check: " ++ to_string e ++ " : " ++ to_string (local_type x),
@@ -264,66 +302,38 @@ meta def tele_check : list expr → list expr → tactic unit
   tele_check es (ts.map (λ y, instantiate_local (local_uniq_name x) e y))
 | _ _ := return punit.star
 
-
-/- 
-  let lam_xs := const (`punit ++ `star) [level.zero]).mk_bindings lam xs
-  infer_type ()
-  >>= unify ((const `punit [level.zero]).mk_bindings pi ts),
-  trace $ "typeckecking: " ++ to_string iargs ++ " wrt " ++ to_string iparams, -/
-
-meta def elab_wrt (x : expr) (e : expr) : tactic expr := do
-  trace $ "elab_wrt input:" ++ to_string e,
+meta def elab_ctor (x : expr) (e : expr) : tactic expr := do
+  trace $ "elab_ctor input:" ++ to_string e,
   (cparams, concl) ← mk_local_pis e,
   (iparams, _) ← mk_local_pis (local_type x),
   let iargs := get_app_args concl,
   tele_check iargs iparams,
-  e ← instantiate_mvars e,
-  trace $ "elab_wrt output: " ++ to_string e,
-  return e
-/- 
-  u ← mk_meta_univ,
-  trace $ "elab_wrt const: " ++ to_string (local_type x),
- -/  /- 
-  infer_type (e.mk_binding lam x) >>= unify ((sort u).mk_binding pi x), -/
-/-   trace $ "elab_wrt const: " ++ to_string (local_type x),
-  e ← to_expr (pexpr.of_expr $ e.mk_binding lam x),
-  trace $ "elab_wrt: " ++ to_string e,
-  return $ e.subst x -/
-/-   infer_type (e.mk_binding lam x) >>= unify ((sort u).mk_binding pi x),
-  e ← instantiate_mvars e,
-  trace $ "elab_wrt: " ++ to_string e,
-  return e -/
-
-  /- 
-meta def elab_ind_wrt (x : expr) (e : expr) : tactic expr := do
-  (cparams, concl) ← mk_local_pis e,
-  (iparams, _) ← mk_local_pis (local_type x),
-  let iargs := get_app_args concl,
-  trace $ "unifying: " ++ to_string iparams ++ " with " ++ to_string iargs,
-  (iparams.zip iargs).mmap' (λ (x : expr × expr), unify x.fst x.snd),
-  instantiate_mvars e -/
+   e ← instantiate_mvars e,
+  trace $ "elab_ctor output = " ++ to_string e,
+   return e
   
 meta def elaborate_inductive (x : expr) (univs01 : list name) (p : name)
  (ty : expr) (ctors : list expr) : tactic (list name × expr × list expr) :=
 do
   let pty0 := ty.instantiate_univ_params [(p, level.zero)],
-  elctors ← ctors.mmap (elab_wrt x),
+  trace $ "elaborate_inductive: expr.elab",
+  elctors ← ctors.mmap (elab_ctor x),
   trace $ "elaborate_inductive: begin uparam",
   let plctors := elctors.map (λ elctor,
     elctor.uparametrize.instantiate_univ_params [(p, level.zero)]),
   trace $ "elaborate_inductive: univ normalizing",
   ctypes ← plctors.mmap infer_type,
-  trace $ "ctypes : " ++ to_string ctypes,
+  trace $ "ctypes = " ++ to_string ctypes,
   clvls ← plctors.mmap (λ plctor, level.normalize <$> slevel <$> infer_type plctor),
-  trace $ "clvls : " ++ to_string clvls,
+  trace $ "clvls = " ++ to_string clvls,
   trace $ "elaborate_inductive: computing indlvl",
   let indlvl := level.succ (clvls.foldr level.max level.zero).normalize,
-  trace $ "indlvl: " ++ to_string indlvl,
-  trace $ "ty: " ++ to_string ty,
-  trace $ "pty0: " ++ to_string pty0,/- 
+  trace $ "indlvl = " ++ to_string indlvl,
+  trace $ "ty = " ++ to_string ty,
+  trace $ "pty0 = " ++ to_string pty0,/- 
   let ptyu := if ctors.length ≤ 1 then pty0 else
     ty.instantiate_univ_params [(p, indlvl)],
-  trace $ "ptyu: " ++ to_string ptyu, -/
+  trace $ "ptyu = " ++ to_string ptyu, -/
   let all_univs := plctors.foldr
     (λ e univs, list.union univs e.collect_univ_params) [],
   let univsR := all_univs.remove_all univs01,
@@ -340,16 +350,16 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   let ctors := env.constructors_of n,
   let nparams := env.inductive_num_params n,
   let nindices := env.inductive_num_indices n,
-  trace ("ctors:", ctors),
+  trace ("ctors = ", ctors),
   let rec_name : name := n ++ "rec",
-  trace ("rec_name:", rec_name),
+  trace ("rec_name = ", rec_name),
   let Rrec_name : name := n.param p ++ "rec",
   rec_decl ← get_decl rec_name,
   let rec_ty := rec_decl.type,
-  trace ("rec_ty:", rec_ty),
+  trace ("rec_ty = ", rec_ty),
   let univs := rec_decl.univ_params,
   let lvls := univs.map level.param,
-  trace ("lvls", lvls),
+  trace ("lvls = ", lvls),
   univs1 ← univs.mmap (λ _, mk_fresh_name),
   let umap := rb_map.of_list (univs.zip univs1),
   let lvls1 := univs1.map level.param,
@@ -408,9 +418,9 @@ meta def param.recursor (p := 2) (n : name) : tactic unit := do
   /- infer_type recR >>= λ btyR, unify rec_tyRrr btyR transparency.all,
   recR_unif ← instantiate_mvars recR,
   trace ("recR_unif:", recR_unif), -/
-  rec_tyRrr ← instantiate_mvars rec_tyRrr,
+  rec_tyRrr ← rec_tyRrr.elab,
   let rec_tyRrr := rec_tyRrr.uparametrize,
-  trace ("uparametrized rec_tyRrr:", rec_tyRrr),
+  trace ("uparametrized rec_tyRrr = ", rec_tyRrr),
   let univsR := rec_tyRrr.collect_univ_params.remove_all (univs ++ univs1),
   add_decl $ mk_definition ((n ++ "rec").param 2)
     (univs ++ univs1 ++ univsR) rec_tyRrr rec_tyRrr.mk_sorry
@@ -432,9 +442,10 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
   (ty0, ty1, tyR) ← ty.param mk_true p umap mk_name_map,
   trace $ ("tyR", to_string tyR),
   let tyRii := tyR.mk_subst_or_app [const n lvls, const n lvls1],
+  tyRii ← tyRii.elab,
   let tyRii := tyRii.uparametrize,
   let uty := lparam $ slevel $ concl tyRii,
-  trace $ "return type universe: " ++ to_string uty,
+  trace $ "return type universe = " ++ to_string uty,
   cn ← mk_local_def nR tyRii,
   trace $ ("tyRii", to_string tyRii),
   trace ("lvls", lvls),
@@ -460,6 +471,25 @@ meta def param.inductive (p := 2) (n : name) : tactic unit := do
   param.recursor p n
 
  
+meta def param.axiom (p := 2) (n : name) : tactic unit := do
+  env ← get_env,
+  decl ← env.get n,
+  let univs := decl.univ_params,
+  let α := decl.type,
+  univs1 ← univs.mmap (λ _, mk_fresh_name),
+  let umap := rb_map.of_list (univs.zip univs1),
+  let (lvls, lvls1) := (univs.map level.param, univs1.map level.param),
+  trace ("def type:", α),
+  (_, _, αR) ← α.param mk_true 2 umap mk_name_map,
+  let tyRrr := αR.mk_subst_or_app [const n lvls, const n lvls1],
+  trace ("def tyR:", tyRrr),
+  tyRrr ← tyRrr.elab,
+  let tyRrr := tyRrr.uparametrize,
+  trace ("uparametrized tyRrr:", tyRrr),
+  let univsR := tyRrr.collect_univ_params.remove_all (univs ++ univs1),
+  add_decl $ mk_definition (n.param 2)
+    (univs ++ univs1 ++ univsR) tyRrr tyRrr.mk_sorry
+
 meta def param.def (p := 2) (n : name) : tactic unit := do
   env ← get_env,
   guard $ env.is_definition n,
@@ -469,26 +499,29 @@ meta def param.def (p := 2) (n : name) : tactic unit := do
     univs1 ← univs.mmap (λ _, mk_fresh_name),
     let umap := rb_map.of_list (univs.zip univs1),
     let (lvls, lvls1) := (univs.map level.param, univs1.map level.param),
-    trace ("def type:", α),
-    trace $ ("def fbody:", to_string fbody),
+    trace ("def type = ", α),
+    trace $ ("def fbody = ", to_string fbody),
     let body := env.unfold_all_macros fbody,
-    trace $ ("def body:", body.to_raw_fmt),
+    trace $ ("def body = ", body.to_raw_fmt),
     (_, _, αR) ← α.param mk_true 2 umap mk_name_map,
+    trace ("def αR = ", αR),
+    let tyR := αR.mk_subst_or_app [const n lvls, const n lvls1],
+    trace ("def tyR = ", tyR),
     /- trace ("def αR:", αR), -/
     (_, _, bodyR) ← body.param mk_true 2 umap mk_name_map,
-    trace ("def bodyR:", bodyR.to_raw_fmt),
-    let tyR := αR.mk_subst_or_app [const n lvls, const n lvls1],
-    trace ("def tyR:", tyR),
+    trace ("def bodyR = ", bodyR.to_raw_fmt),
     /- btyR ← infer_type bodyR, -/
     /- unify tyR btyR transparency.all,
     tyR_unif ← instantiate_mvars tyR,
     trace ("def tyR_unif:", tyR_unif), -/
     /- trace ("def tyR_unif:", tyR_unif.to_raw_fmt), -/
+    trace ("============ elaborate definition ============="),
     (univsR, tyR, bodyR) ← elaborate_definition (univs ++ univs1) tyR bodyR,
+    trace ("============ adding definition ============="),
     trace $ "def " ++ to_string (n.param 2) ++ " : " ++ to_string tyR ++ " :=",
     trace $ bodyR,
     add_decl $ mk_definition (n.param 2) (univs ++ univs1 ++ univsR) tyR bodyR,
-    trace ("=======================")
+    trace ("============ added definition =============")
   | _ := fail $ "param.def:  not a definition"
   end
 
@@ -502,6 +535,11 @@ meta def param.decl (p := 2) (n : name) : tactic unit := do
 meta def param_cmd (_ : parse $ tk "#param") : lean.parser unit := do
   ns ← many ident,
   of_tactic $ ns.mmap' (param.decl 2)
+
+@[user_command]
+meta def param_axiom_cmd (_ : parse $ tk "#param_axiom") : lean.parser unit := do
+  ns ← many ident,
+  of_tactic $ ns.mmap' (param.axiom 2)
 
 ----------------------
 -- Working examples --
@@ -536,22 +574,6 @@ inductive punit.param : punit.{upunit0} -> punit.{upunit1} -> Prop
 #param nonempty
 #print list
 
-run_cmd do
-  u ← level.param <$> mk_fresh_name,
-  v ← mk_meta_univ,
-  let t : expr := tactic.mk_app (const (`list.nil) [u]) [const `punit [v]],
-  tty ← infer_type t,
-  trace $ "tty = " ++ to_string tty,
-  ttyty ← infer_type tty,
-  m ← mk_meta_var tty,
-  unify t m,
-  trace $ "ttyty = " ++ to_string ttyty,
-  t ← to_expr (pexpr.of_expr t),
-  type_check t,
-  t ← instantiate_mvars t,
-  trace $ "t = " ++ to_string (to_raw_fmt t) 
-
-
 #param punit
 
 #param bool
@@ -568,6 +590,8 @@ inductive list.param (T0 : Type.{u}) (T1 : Type.{u'}) (TR : T0 -> T1 -> Type.{ma
 #param pprod
 
 #param has_zero has_one has_neg has_add has_mul
+#param has_zero.zero
+
 
 #param true false and
 #param or
@@ -578,11 +602,19 @@ inductive list.param (T0 : Type.{u}) (T1 : Type.{u'}) (TR : T0 -> T1 -> Type.{ma
 #param nat.cases_on
 #print nat.below
 #print nat.rec
+#print nat.succ.param.«2»
 #print nat.rec.param.«2»
+#print punit.star.param.«2»
 
-#param nat.below
+#print pprod.fst
+#param pprod.fst
 
-#check (ℕ → ℕ → Prop : Prop)
+#param_axiom pprod.snd
+
+#param_axiom nat.below
+
+#print nat.brec_on
+#print nat.below.param.«2»
 
 def nat.below.param : Π (C0 : nat -> Sort.{l}) (C1 : nat -> Sort.{l'}) (CR : Pi (n0 : nat)
  (n1 : nat) (nR : nat.param.«2» n0 n1) (x0 : C0 n0) (x1 : C1 n1), Prop) 
@@ -619,11 +651,11 @@ def nat.below.param : Π (C0 : nat -> Sort.{l}) (C1 : nat -> Sort.{l'}) (CR : Pi
 
 #print test
 
-#param nat.brec_on
-
-#param nat.add.below
-
+#param_axiom nat.brec_on
 #print nat.add._main
+#param_axiom nat.add._main
+
+#param_axiom nat.add
 set_option formatter.hide_full_terms false
 
 def empty.rec.type := Π (C : empty → Sort l) (n : empty), C n
@@ -664,22 +696,6 @@ run_cmd (do
     [{environment.intro_rule . constr := `refl, type := ctorty}])],
   updateex_env $ λe, e.add_ginductive options.mk [l] params inds ff)
  -/
-
-
-run_cmd do param.recursor 2 `empty
-#check empty.param.«2»
-
-def test :
-  ∀ (C0 C1 : empty → Sort l)
-    (CR : Π (a0 a1 : empty), empty.param.«2» a0 a1 → C0 a0 → C1 a1 → Prop)
-    (n0 n1 : empty) (nR : empty.param.«2» n0 n1),
-  CR n0 n1 nR (empty.rec C0 n0) (empty.rec C1 n1)
- := λ (C0 C1 : empty → Sort l)
-      (CR : Π (n0 n1 : empty), empty.param.«2» n0 n1 → C0 n0 → C1 n1 → Prop)
-    (n0 n1 : empty) (nR : empty.param.«2» n0 n1),
-    @empty.param.«2».rec
-      (λ (n0 n1 : empty) (nR : empty.param.«2» n0 n1), 
-      CR n0 n1 nR (empty.rec.{l} C0 n0) (empty.rec.{l} C1 n1)) n0 n1 nR
 
 
 
@@ -724,10 +740,27 @@ def id_param2 :Π (α0 α1 : Sort u) (αR : α0 → α1 → Sort u) (a0 : α0) (
 #print list.rec
 #print list.param.«2».rec
 
-#print nat.pred._main
+#param id_rhs
+#param nat.has_zero
+#param nat.pred._main
+
+run_cmd do
+  let trace_unify (e1 e2 : expr) : tactic unit := (do
+    trace $ "try to unify " ++ to_string e1 ++ " with " ++ to_string e2,
+    unify e1 e2 transparency.all,
+    trace $ "unify successful between " ++ to_string e1 ++ " with " ++ to_string e2),
+  let c1 : expr tt := const `nat.pred [],
+  let c2 : expr tt := const `nat.pred._main [],
+  trace_unify c1 c2, -- success
+  trace "", 
+  let eta_nat t := lam `n bid (const `nat []) $ mk_app t [var 0], 
+  trace_unify (eta_nat c1) (eta_nat c2) -- failure!
+
+
+#param nat.pred
+#print nat.pred
 #print nat.cases_on
 
-#param nat.add
 
 #print declaration
 
@@ -762,8 +795,6 @@ run_cmd (do
 
 
 #print has_zero.zero
-
-#param has_zero.zero
 
 #print has_zero.zero.param.«2»
 
