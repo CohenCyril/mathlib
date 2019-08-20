@@ -13,7 +13,7 @@ by Chantal Keller and Marc Lasson
 in Computer Science Logic 2012 (CSL’12).
 -/
 
-import tactic
+import tactic tactic.find
 import category.monad.basic category.monad.writer
 open expr native tactic
 open lean.parser interactive
@@ -35,6 +35,20 @@ meta def expr.strip_lam : expr → nat → option expr
 | (lam _ _ _ bd) (nat.succ n) := bd.strip_lam n
 | t 0 := return t
 | _ _ := none
+
+
+meta def expr.collect_const : expr → list name
+| (const a a_1) := [a]
+| (mvar a a_1 a_2) := a_2.collect_const
+| (local_const a a_1 a_2 a_3) := a_3.collect_const
+| (app a a_1) := a.collect_const.union a_1.collect_const
+| (lam a a_1 a_2 a_3) := a_2.collect_const.union a_3.collect_const
+| (pi a a_1 a_2 a_3) := a_2.collect_const.union a_3.collect_const
+| (elet a a_1 a_2 a_3) :=
+    a_1.collect_const.union $ a_2.collect_const.union a_3.collect_const
+| (macro a a_1) := (a_1.map expr.collect_const).join
+| e@(var a) := []
+| e@(sort a) := []
 
 --
 meta def concl : expr → expr | (pi _ _ _ ty) := concl ty | ty := ty
@@ -247,25 +261,32 @@ meta def expr.uparametrize : expr → expr
 | (pi n bi e t) := pi n bi e.uparametrize t.uparametrize
 | (elet n g e f) :=
    elet n g.uparametrize e.uparametrize f.uparametrize
+| (macro d args) := macro d $ args.map expr.uparametrize
 | e@(var n) := e
-| e@(macro d args) := e
 
+meta def expr.delta_to_main (e : expr) : tactic expr := do
+  env ← get_env,
+  let ns := e.collect_const,
+  flip delta e $
+  ns.foldr (λ n ns,
+   if env.contains (n ++ `_main) ∨ (env.is_projection n).is_some
+   then n :: ns else ns) []
 
-meta def dsimp_unify (e1 e2 : expr) : tactic unit := do
-    let s := simp_lemmas.mk,
-    e1 ← s.dsimplify [] e1 <|> return e1,
-    e2 ← s.dsimplify [] e2 <|> return e2,
-    trace $ "dsimp_unify " ++ to_string e1
+meta def dunify (e1 e2 : expr) : tactic unit := do
+    e1 ← e1.delta_to_main <|> pure e1,
+    e2 ← e2.delta_to_main <|> pure e2,
+    trace $ "dunify " ++ to_string e1
                ++ " with " ++ to_string e2,
     unify e1 e2 transparency.all
 
 meta def expr.elab (e : expr) : tactic expr := do
+  env ← get_env,
   trace $ "e = " ++ to_string (to_raw_fmt e), trace "",
   p ← e.skeleton,
   trace $ "p = " ++ to_string (to_raw_fmt p), trace "",
   e' ← to_expr p,
   trace $ "e' = " ++ to_string (to_raw_fmt e'),  trace "",
-  dsimp_unify e' e,
+  dunify e' e,
   e ← instantiate_mvars e,
   trace $ "unified e = " ++ to_string (to_raw_fmt e), trace "",
   return e
@@ -276,7 +297,7 @@ do
   ty ← ty.elab,
   term ← term.elab,
   tty ← infer_type term,
-  dsimp_unify tty ty,
+  dunify tty ty,
   pty ← expr.uparametrize <$> instantiate_mvars ty,
   pterm ← expr.uparametrize <$> instantiate_mvars term,
   let all_univs := pty.collect_univ_params.union pterm.collect_univ_params,
@@ -290,6 +311,7 @@ meta def expr.lconstify (fn cn : name) (ty : expr) : expr → expr
 | (lam n bi e t) := lam n bi e.lconstify t.lconstify
 | (pi n bi e t) := pi n bi e.lconstify t.lconstify
 | (elet n g e f) := elet n g.lconstify e.lconstify f.lconstify
+| (macro d args) := macro d $ args.map expr.lconstify
 | e := e
 
 meta def expr.constify (fn cn : name) (lvls : list level) (e : expr) : expr :=
@@ -506,13 +528,14 @@ meta def param.def (p := 2) (n : name) : tactic unit := do
   guard $ env.is_definition n,
   decl ← env.get n,
   match decl with
-  | (declaration.defn _ univs α fbody _ _) := do
+  | (declaration.defn _ univs α body _ _) := do
     univs1 ← univs.mmap (λ _, mk_fresh_name),
     let umap := rb_map.of_list (univs.zip univs1),
     let (lvls, lvls1) := (univs.map level.param, univs1.map level.param),
+    let α := env.unfold_all_macros α,
     trace ("def type = ", α),
-    trace $ ("def fbody = ", to_string fbody),
-    let body := env.unfold_all_macros fbody,
+    trace $ ("def body with macro = ", to_string body),
+    let body := env.unfold_all_macros body,
     trace $ ("def body = ", body.to_raw_fmt),
     (_, _, αR) ← α.param mk_true 2 umap mk_name_map,
     trace ("def αR = ", αR),
@@ -547,22 +570,9 @@ meta def param.decl (p := 2) (n : name) : tactic unit := do
   else if env.is_definition n then param.def p n
   else fail $ "translate: cannot translate " ++ to_string n
 
-meta def expr.collect_const : expr → list name
-| (const a a_1) := [a]
-| (mvar a a_1 a_2) := a_2.collect_const
-| (local_const a a_1 a_2 a_3) := a_3.collect_const
-| (app a a_1) := a.collect_const.union a_1.collect_const
-| (lam a a_1 a_2 a_3) := a_2.collect_const.union a_3.collect_const
-| (pi a a_1 a_2 a_3) := a_2.collect_const.union a_3.collect_const
-| (elet a a_1 a_2 a_3) :=
-    a_1.collect_const.union $ a_2.collect_const.union a_3.collect_const
-| (macro a a_1) := (a_1.map expr.collect_const).join
-| e@(var a) := []
-| e@(sort a) := []
-
 meta def declaration.collect_const : declaration → list name
 | (declaration.defn n ls t v h tr) := t.collect_const.union v.collect_const
-| (declaration.thm n ls t v)       := t.collect_const.union v.collect_const
+| (declaration.thm n ls t v)       := t.collect_const.union v.get.collect_const
 | (declaration.cnst n ls t tr)     := t.collect_const
 | (declaration.ax n ls t)          := t.collect_const
 
@@ -600,12 +610,36 @@ meta def param_rec_ax_cmd (_ : parse $ tk "#param_rec_ax") : lean.parser unit :=
 -- Working examples --
 ----------------------
 
-#print empty.rec
-#print band bnot
+#param_rec empty nonempty punit bool list nat or and not
+#param_rec has_zero has_one has_neg has_add has_mul
+#param_rec id
 
-#param_rec_ax empty nonempty punit bool list nat or and not
+def n_id : ℕ → ℕ
+| nat.zero := nat.zero
+| (nat.succ k) := nat.succ k
+
+def n_id2 := n_id._main
+#print n_id -- n_id._main
+#print n_id2 -- n_id._main
+
+set_option pp.all false
+
+structure box_nat := (unbox : nat)
+
+#param box_nat
+#param box_nat.unbox
+
+#print pprod.fst
+
+
+#param_rec n_id
+#param_rec pprod.fst
+#param_rec pprod.snd
+#param_axiom nat.below
+#param nat.brec_on
+
+#param nat.add._main
 #param_rec_ax pprod.fst pprod.snd
-#param_rec_ax has_zero has_one has_neg has_add has_mul
 #param_rec_ax id nat.add nat.mul list.append
 #param_rec_ax bor band bnot bxor
 #param_rec_ax eq.cases_on eq.drec
@@ -671,13 +705,6 @@ let R := nonempty.param.«2» bool bool (≠) in
 classical.choice.param.«2» bool bool (≠) ⟨ff⟩ ⟨tt⟩
   (⟨_, _, _, ff, tt, bool.ff_ne_tt⟩ : R ⟨ff⟩ ⟨tt⟩) rfl
 
-def n_id : ℕ → ℕ
-| nat.zero := nat.zero
-| (nat.succ k) := nat.succ k
-
-set_option pp.all true
-
-#param_rec_ax n_id
 
 def P : (ℕ → ℕ) → Prop := λ f, f nat.zero = nat.zero
 
@@ -699,10 +726,6 @@ t1 ← to_expr ``(Π (a0 : nat) (a1 : nat) (aR : nat.param.«2» a0 a1),
     nat.param.«2» (n_id a0) (n_id a1)),
   trace_unify t1 t2
 
-
-def n_id2 := n_id._main
-#print n_id -- n_id._main
-#print n_id2 -- n_id._main
 
 example : n_id = n_id2 := rfl -- succeeds
 
