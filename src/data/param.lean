@@ -14,6 +14,7 @@ in Computer Science Logic 2012 (CSL’12).
 -/
 
 import tactic tactic.find
+import logic.relation
 import category.monad.basic category.monad.writer
 open expr native tactic
 open lean.parser interactive
@@ -67,6 +68,54 @@ inductive test : Type (max (v+1) v u)
 | one (t : forall x : Type v, list x -> Sort u): test
 #check (forall test : Type w, forall x : Type v, list x -> Sort u -> test)
 #print test
+
+structure is_fun {α : Sort u} {β : Sort v} (R : α → β → Sort w) :=
+  (f : α → β) (fR : Π a, R a (f a)) (Rf : ∀ a b, R a b → f a = b)
+
+structure is_iso {α : Sort u} {β : Sort v} (R : α → β → Sort w) :=
+  (direct : is_fun R) (reverse : is_fun (flip R))
+
+structure eq_rel (α : Sort u) (β : Sort v) :=
+  (rel : α → β → Sort w) (iso : is_iso rel)
+
+def eq_rel_eq_rel : eq_rel (Type u) (Type u) := begin
+  refine ⟨eq_rel,
+    ⟨⟨id, λ a, ⟨λ a b, a = b, ⟨⟨id, λ _, rfl, λ _ _, id⟩,
+                               ⟨id, λ _, rfl, λ _ _, eq.symm⟩⟩⟩, sorry⟩,
+     ⟨id, λ a, ⟨λ a b, a = b, ⟨⟨id, λ _, rfl, λ _ _, id⟩,
+                               ⟨id, λ _, rfl, λ _ _, eq.symm⟩⟩⟩, sorry⟩⟩
+  ⟩
+  end
+
+lemma eq_rel_prop_equiv (P1 P2 : Prop) :
+  (eq_rel P1 P2 → (P1 ↔ P2)) := begin
+{rintros ⟨R,⟨⟨f,fR⟩,⟨g,gR⟩⟩⟩, split, {exact f}, {exact g}}
+end
+
+lemma prop_equiv_eq_rel (P1 P2 : Prop) :
+  ((P1 ↔ P2) → eq_rel.{0 0 0} P1 P2) := begin
+{rintros ⟨f,g⟩,
+ refine ⟨λ p q, f p = q, ⟨⟨f, λ a, rfl, sorry⟩,⟨g, λ b, rfl, sorry⟩⟩⟩}
+end
+
+set_option pp.all false
+lemma pi_eq_rel (α0 α1 : Sort u) (αR : eq_rel.{u u w} α0 α1) 
+  (β0 : α0 → Sort v) (β1 : α1 → Sort v)
+  (βR : ∀ (a0 : α0) (a1 : α1) (aR : αR.rel a0 a1),
+    eq_rel.{v v l} (β0 a0) (β1 a1)) :
+  eq_rel.{_ _ (imax u u w l)} (Π a0, β0 a0) (Π a1, β1 a1) := begin
+  refine ⟨λ (f0 : Π a0, β0 a0) (f1 : Π a1, β1 a1),
+            Π (a0 : α0) (a1 : α1) (aR : αR.rel a0 a1),
+             (βR a0 a1 aR).rel (f0 a0) (f1 a1)
+  ,⟨⟨λ f0 a1, (βR _ _ $ αR.iso.reverse.fR a1).iso.direct.f (f0 _),_, _⟩
+   ,⟨λ g0 a0, (βR _ _ $ αR.iso.direct.fR a0).iso.reverse.f (g0 _),_, _⟩⟩⟩, {
+    rintros f0 a0 a1 aR,
+    have := (βR _ _ aR).iso.direct.Rf,
+
+  },
+
+    end
+#print pi_eq_rel
 
 
 meta def expr.skeleton : expr → tactic pexpr
