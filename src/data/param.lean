@@ -36,6 +36,10 @@ meta def expr.strip_lam : expr → nat → option expr
 | t 0 := return t
 | _ _ := none
 
+meta def concl : expr → expr | (pi _ _ _ ty) := concl ty | ty := ty
+meta def hdapp : expr → expr | (app x _)     := hdapp x  | x := x
+meta def slevel : expr → level | (sort lvl) := lvl | _ := level.zero
+meta def lparam : level → name | (level.param n) := n | _ := ""
 
 meta def expr.collect_const : expr → list name
 | (const a a_1) := [a]
@@ -51,9 +55,6 @@ meta def expr.collect_const : expr → list name
 | e@(sort a) := []
 
 --
-meta def concl : expr → expr | (pi _ _ _ ty) := concl ty | ty := ty
-meta def hdapp : expr → expr | (app x _)     := hdapp x  | x := x
-
 meta def split_pis : option ℕ → expr → list expr × expr
 | (some 0) ty := ([], ty)
 | n (pi _ _ α ty) :=
@@ -67,16 +68,14 @@ inductive test : Type (max (v+1) v u)
 #check (forall test : Type w, forall x : Type v, list x -> Sort u -> test)
 #print test
 
-meta def slevel : expr → level | (sort lvl) := lvl | _ := level.zero
-meta def lparam : level → name | (level.param n) := n | _ := ""
 
 meta def expr.skeleton : expr → tactic pexpr
 | (var a) := return $ var a
 | (sort a) := sort <$> mk_meta_univ
 | (const a a_1) := return $ const a []
-| (mvar a a_1 a_2) := mvar a a_1 <$> a_2.skeleton
-| (local_const a a_1 a_2 a_3) := local_const a a_1 a_2 <$> a_3.skeleton
-| (app a a_1) := app <$> (pexpr.mk_explicit <$> a.skeleton) <*> a_1.skeleton
+| p@(mvar a a_1 a_2) := mvar a a_1 <$> (infer_type p >>= expr.skeleton)
+| p@(local_const a a_1 a_2 a_3) := local_const a a_1 a_2 <$> (infer_type p >>= expr.skeleton)
+| (app a a_1) := app <$> (pexpr.mk_explicit <$> expr.skeleton a) <*> expr.skeleton a_1
 | (lam a a_1 a_2 a_3) := lam a a_1 <$> a_2.skeleton <*> a_3.skeleton
 | (pi a a_1 a_2 a_3) := pi a a_1 <$> a_2.skeleton <*> a_3.skeleton
 | (elet a a_1 a_2 a_3) := elet a <$> a_1.skeleton <*> a_2.skeleton <*> a_3.skeleton
@@ -278,6 +277,47 @@ meta def dunify (e1 e2 : expr) : tactic unit := do
     trace $ "dunify " ++ to_string e1
                ++ " with " ++ to_string e2,
     unify e1 e2 transparency.all
+/-
+meta def is_sort (e : expr) : tactic level := do
+  l ← mk_meta_univ,
+  unify e (sort l) transparency.all,
+  get_univ_assignment l
+
+meta def mk_meta : tactic expr := do
+  fresh_sort ← @sort tt <$> mk_meta_univ,
+  mk_meta_var fresh_sort
+
+meta def expr.infer_type : expr → tactic expr
+| (app e f) := do
+    e_ty ← e.infer_type, f_ty ← f.infer_type,
+    e_ret_ty ← mk_meta,
+    unify e_ty (pi `_ bid f_ty e_ret_ty) transparency.all,
+    return (e_ret_ty.instantiate_var f)
+
+| (lam n bi e t) := do
+  x ← mk_local' n bi e, let tx := t.instantiate_var x,
+  tx_ty ← tx.infer_type,
+  e_ty ← e.infer_type, is_sort e_ty,
+  return (tx_ty.mk_binding pi x)
+
+| (pi n bi e t) := do
+  le ← e.infer_type >>= is_sort,
+  lt ← t.infer_type >>= is_sort,
+  return (sort (level.imax le lt))
+
+| (elet n g e f) := do
+  e_ty ← e.infer_type, is_sort e_ty,
+  g_ty ← g.infer_type,
+  unify g_ty e transparency.all,
+  (f.instantiate_var g).infer_type
+
+| (macro d args) := fail $ "infer: cannot handle macros"
+| e@(local_const n m bi t) := return t
+| e@(mvar n m t) := return t
+| e@(sort l) := return $ sort (level.succ l)
+| e@(const n ls) := infer_type e
+| e@(var n) := fail $ "infer: cannot check (de Brujin) open terms"
+ -/
 
 meta def expr.elab (e : expr) : tactic expr := do
   env ← get_env,
@@ -289,6 +329,8 @@ meta def expr.elab (e : expr) : tactic expr := do
   dunify e' e,
   e ← instantiate_mvars e,
   trace $ "unified e = " ++ to_string (to_raw_fmt e), trace "",
+/-   e.infer_type,
+  e ← instantiate_mvars e, -/
   return e
 
 meta def elaborate_definition (univs01 : list name)
@@ -328,7 +370,7 @@ meta def expr.constify (fn cn : name) (lvls : list level) (e : expr) : expr :=
 meta def tele_check : list expr → list expr → tactic unit
 | (e :: es) (x :: ts) := do
   trace $ "tele_check: " ++ to_string e ++ " : " ++ to_string (local_type x),
-  infer_type e >>= unify (local_type x),
+  infer_type e >>= dunify (local_type x),
   tele_check es (ts.map (λ y, instantiate_local (local_uniq_name x) e y))
 | _ _ := return punit.star
 
@@ -635,7 +677,7 @@ structure box_nat := (unbox : nat)
 #param_rec n_id
 #param_rec pprod.fst
 #param_rec pprod.snd
-#param_axiom nat.below
+#param nat.below
 #param nat.brec_on
 
 #param nat.add._main
@@ -707,6 +749,16 @@ classical.choice.param.«2» bool bool (≠) ⟨ff⟩ ⟨tt⟩
 
 
 def P : (ℕ → ℕ) → Prop := λ f, f nat.zero = nat.zero
+
+run_cmd do
+  let trace_unify (e1 e2 : expr) : tactic unit := (do
+    let s := simp_lemmas.mk,
+    trace $ "try to unify " ++ to_string e1 ++ " with " ++ to_string e2,
+    unify e1 e2 transparency.all,
+    trace $ "unify successful between " ++ to_string e1 ++ " with " ++ to_string e2),
+  t1 ← to_expr ``(n_id),
+  t2 ← to_expr ``(λ (a0 : nat), _),
+  trace_unify t1 t2
 
 run_cmd do
   let trace_unify (e1 e2 : expr) : tactic unit := (do
