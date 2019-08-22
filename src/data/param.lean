@@ -70,7 +70,8 @@ inductive test : Type (max (v+1) v u)
 #print test
 
 structure is_fun {α : Sort u} {β : Sort v} (R : α → β → Sort w) :=
-  (f : α → β) (fR : Π a, R a (f a)) (Rf : ∀ a b, R a b → f a = b)
+  (f : α → β) (fR : Π a, R a (f a))
+  (Rf : ∀ a b, R a b -> b = f a)
 
 structure is_iso {α : Sort u} {β : Sort v} (R : α → β → Sort w) :=
   (direct : is_fun R) (reverse : is_fun (flip R))
@@ -80,10 +81,10 @@ structure eq_rel (α : Sort u) (β : Sort v) :=
 
 def eq_rel_eq_rel : eq_rel (Type u) (Type u) := begin
   refine ⟨eq_rel,
-    ⟨⟨id, λ a, ⟨λ a b, a = b, ⟨⟨id, λ _, rfl, λ _ _, id⟩,
-                               ⟨id, λ _, rfl, λ _ _, eq.symm⟩⟩⟩, sorry⟩,
-     ⟨id, λ a, ⟨λ a b, a = b, ⟨⟨id, λ _, rfl, λ _ _, id⟩,
-                               ⟨id, λ _, rfl, λ _ _, eq.symm⟩⟩⟩, sorry⟩⟩
+    ⟨⟨id, λ a, ⟨λ a b, a = b, ⟨⟨id, λ _, rfl, λ _ _, eq.symm⟩,
+                               ⟨id, λ _, rfl, λ _ _, id⟩⟩⟩, sorry⟩,
+     ⟨id, λ a, ⟨λ a b, a = b, ⟨⟨id, λ _, rfl, λ _ _, eq.symm⟩,
+                               ⟨id, λ _, rfl, λ _ _, id⟩⟩⟩, sorry⟩⟩
   ⟩
   end
 
@@ -99,6 +100,7 @@ lemma prop_equiv_eq_rel (P1 P2 : Prop) :
 end
 
 set_option pp.all false
+set_option trace.check true
 lemma pi_eq_rel (α0 α1 : Sort u) (αR : eq_rel.{u u w} α0 α1) 
   (β0 : α0 → Sort v) (β1 : α1 → Sort v)
   (βR : ∀ (a0 : α0) (a1 : α1) (aR : αR.rel a0 a1),
@@ -110,7 +112,14 @@ lemma pi_eq_rel (α0 α1 : Sort u) (αR : eq_rel.{u u w} α0 α1)
   ,⟨⟨λ f0 a1, (βR _ _ $ αR.iso.reverse.fR a1).iso.direct.f (f0 _),_, _⟩
    ,⟨λ g0 a0, (βR _ _ $ αR.iso.direct.fR a0).iso.reverse.f (g0 _),_, _⟩⟩⟩, {
     rintros f0 a0 a1 aR,
-    have := (βR _ _ aR).iso.direct.Rf,
+    have β := (βR a0 a1 aR).iso.direct.fR (f0 a0),
+
+    have := αR.iso.reverse.Rf _ _ aR,
+    induction this,
+
+    have := (βR _ _ _).iso.reverse.Rf _ _ (this _), {
+      rw [this],
+    }
 
   },
 
